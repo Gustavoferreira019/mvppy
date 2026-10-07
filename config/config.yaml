@@ -1,0 +1,6 @@
+capture:
+  source: "./videos/video.mp4"
+
+detector:
+  model_path: "yolov8n-pose.pt"
+  confidence: 0.5
