@@ -1,6 +1,6 @@
 import cv2
 
-from capture import Capture
+from capture.capture import Capture
 from config import load_config
 
 config = load_config("./config/config.yaml")
