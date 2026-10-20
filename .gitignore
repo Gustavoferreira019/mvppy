@@ -1,8 +1,37 @@
-# Python
+# Python e caches
 __pycache__/
 *.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
 # Ambientes virtuais
 venv/
-venv313/
+venv*/
 .venv/
+
+# Build e distribuição gerados localmente
+build/
+dist/
+*.spec
+.release-work/
+*.zip
+
+# Estado e dados gerados durante a execução
+runtime_status.json
+runtime_display.json
+runtime_previews/
+events/clips/
+events/*.json
+*.log
+videos/
+
+# Arquivos temporários de IDE/editores
+.vscode/
+.idea/
+tempCodeRunnerFile.py
+
+# Sistema operacional
+.DS_Store
+Thumbs.db

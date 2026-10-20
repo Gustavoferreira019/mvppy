@@ -1,0 +1,143 @@
+VIGIL.AI — MANUAL DO USUÁRIO
+Versão Alpha 0.1.0
+
+1. SOBRE O VIGIL.AI
+
+O VIGIL.AI monitora câmeras, identifica pessoas dentro de uma área definida e grava um clipe quando uma entrada é detectada. Ele foi pensado para lojas, apartamentos, escritórios e outros ambientes que precisam acompanhar áreas específicas.
+
+Esta versão Alpha funciona localmente no computador. O processamento, os vídeos e os eventos ficam no próprio equipamento. O sistema identifica presença de pessoas; ele não confirma sozinho que ocorreu um furto e não substitui a avaliação de um responsável.
+
+2. INSTALAÇÃO E ABERTURA
+
+1. Extraia `VigilAI-alpha-0.1.0.zip` para uma pasta do computador.
+2. Mantenha todos os arquivos e subpastas juntos.
+3. Clique duas vezes em `VigilAI-alpha-0.1.0.exe`.
+4. O navegador abrirá o painel em `http://127.0.0.1:8765`.
+
+O pacote já contém os componentes necessários. O cliente não precisa instalar Python. O programa principal precisa permanecer aberto para analisar as câmeras e gravar eventos. Fechar apenas a janela de vídeo não interrompe o monitoramento.
+
+Se o navegador não abrir, acesse o endereço acima manualmente. Se o programa fechar ou mostrar uma mensagem de erro, consulte os arquivos `launcher_error.log`, `core.log` e `configurator.log` na pasta do programa.
+
+3. PRIMEIRO CADASTRO
+
+1. No campo **Seção**, escolha **Adicionar câmera**.
+2. Escolha o tipo de fonte.
+3. Informe um nome fácil de reconhecer, como `Entrada`, `Caixa` ou `Estoque`.
+4. Preencha os campos obrigatórios exibidos para aquela fonte.
+5. Clique em **Testar conexão**.
+6. Depois da mensagem de sucesso, confira a prévia.
+7. Desenhe o retângulo da área que será monitorada.
+8. Ajuste os segundos antes e depois do evento.
+9. Clique em **Salvar configuração**.
+
+A câmera não abre automaticamente em uma janela depois do cadastro. Para visualizá-la, escolha **Câmeras cadastradas**, clique no cartão da câmera e use **Abrir monitoramento** na tela de edição.
+
+A prévia, a zona e os campos de gravação só ficam disponíveis depois de uma conexão bem-sucedida. Se o teste falhar, corrija os dados e use **Tentar novamente** quando o botão aparecer.
+
+4. TIPOS DE FONTE
+
+WEBCAM DO NOTEBOOK/USB
+
+Selecione a webcam encontrada na lista. O índice exibido, como `Webcam 0`, representa o dispositivo conectado ao computador.
+
+Depois de cadastrada, a webcam fica vinculada àquela câmera e não pode ser usada em outro cadastro. Para reutilizá-la, exclua primeiro o cadastro original.
+
+CÂMERA ONVIF (WI-FI OU REDE)
+
+Informe o endereço IP ou host, usuário e senha. Use **Buscar câmeras ONVIF** e selecione o dispositivo encontrado. O equipamento precisa estar acessível na mesma rede e ter ONVIF habilitado.
+
+Quando a câmera fornecer o endereço de vídeo, o VIGIL.AI preencherá os dados automaticamente. Se nenhum dispositivo for encontrado, confira a rede, o endereço, as credenciais e as permissões do equipamento. Alguns modelos não oferecem ONVIF; nesses casos, use RTSP manual.
+
+CÂMERA DE REDE (RTSP MANUAL)
+
+Use esta opção quando a câmera ou o NVR não aparecer na busca ONVIF. Informe endereço, usuário, senha, fabricante, canal, stream, protocolo e porta.
+
+O caminho RTSP é montado pelo VIGIL.AI a partir desses dados e fica somente para leitura. O cliente não precisa construir a URL manualmente. A estrutura exata depende do fabricante e do modelo.
+
+NVR
+
+Um NVR com oito canais não significa que os oito canais serão monitorados automaticamente. Cadastre cada canal desejado como uma câmera separada, por exemplo `NVR Entrada`, `NVR Caixa` e `NVR Estoque`.
+
+Cada canal cadastrado terá sua própria zona, estado e gravação. Canais que não forem cadastrados não entram no processamento.
+
+5. CÂMERAS CADASTRADAS E EDIÇÃO
+
+Escolha **Câmeras cadastradas** no campo **Seção** para ver os cadastros. Clique no cartão desejado para abrir a edição.
+
+Na edição:
+
+- a fonte vinculada aparece em modo somente leitura;
+- o nome, a zona e os segundos antes/depois podem ser alterados;
+- a prévia mostra a área monitorada salva;
+- **Abrir monitoramento** abre a janela de vídeo daquela câmera;
+- **Salvar configuração** aplica a alteração sem reiniciar o programa;
+- **Excluir câmera** remove o cadastro e libera a fonte para novo uso.
+
+Uma fonte vinculada não pode ser testada ou cadastrada novamente em outra câmera. Essa regra vale para webcam, câmera IP, ONVIF, RTSP e canais de NVR.
+
+O cartão mostra **Ativa** quando o processo principal está acompanhando aquela fonte. **Desativada** significa que ela não está sendo processada naquele momento, por exemplo porque o programa principal está fechado ou a câmera não está habilitada na configuração.
+
+6. MONITORAMENTO E PRÉVIA
+
+O botão **Abrir monitoramento** aparece somente quando uma câmera cadastrada está aberta para edição. A janela de vídeo pode ser fechada pelo X ou pela tecla Q; isso fecha apenas a visualização. O processo continua analisando a fonte e gravando eventos.
+
+Quando o painel estiver consultando uma câmera que já está sendo usada pelo monitoramento, ele não abre uma segunda conexão:
+
+- **Câmera/NVR sendo utilizada** com fundo desfocado: a fonte está em uso e o painel mostra uma referência;
+- **Câmera/NVR sendo utilizada** com fundo preto: a fonte está aberta na janela principal;
+- **OFFLINE**: a fonte não respondeu; verifique a conexão e tente novamente.
+
+7. ZONA MONITORADA
+
+A zona é o retângulo laranja desenhado sobre a prévia. O evento é criado quando o centro da pessoa detectada entra nessa área.
+
+Inclua somente o local que deve ser observado. Evite calçadas, portas ou áreas de circulação normal quando elas não fizerem parte do objetivo. A zona é salva em coordenadas de 0 a 1 e continua válida mesmo se a resolução do vídeo mudar.
+
+Depois de salvar uma alteração, a zona também aparece na janela de monitoramento para facilitar a conferência.
+
+8. EVENTOS E CLIPES
+
+Quando uma pessoa entra na zona, o VIGIL.AI mantém os segundos anteriores configurados e continua gravando pelos segundos posteriores.
+
+Os arquivos ficam em:
+
+`events\\clips\\NomeDaCamera\\`
+
+Para cada evento podem ser gerados:
+
+- um vídeo `.mp4` com o trecho capturado;
+- um arquivo `.json` com horário, confiança, zona e informações do evento.
+
+Os arquivos são salvos no computador que executa o VIGIL.AI. Garanta espaço livre suficiente em disco. O programa precisa estar aberto para detectar movimentos e gerar novos eventos.
+
+9. ESTADOS E PROBLEMAS COMUNS
+
+**OFFLINE ou conexão recusada**
+
+Confira energia, cabo ou Wi-Fi, endereço IP, porta, usuário, senha e permissões RTSP/ONVIF. Verifique também se outro programa ou gravador já está ocupando o dispositivo.
+
+**Webcam sem imagem, congelada ou com ruído**
+
+Feche Teams, Zoom, OBS e o aplicativo nativo da câmera. O Windows normalmente permite que apenas um processo acesse a webcam por vez. Confirme também se o índice selecionado corresponde à webcam correta.
+
+**A câmera já está vinculada**
+
+Edite o cadastro original ou exclua-o antes de tentar usar a mesma fonte novamente. O vínculo é mantido para evitar duas configurações concorrentes para o mesmo dispositivo.
+
+**O navegador não abre**
+
+Abra `http://127.0.0.1:8765` manualmente. Se o painel não responder, confira se o launcher continua aberto e consulte `configurator.log`.
+
+10. DESEMPENHO E PRIVACIDADE
+
+Para várias câmeras, prefira o stream secundário quando disponível, reduza a resolução de exibição e evite abrir muitas janelas de vídeo ao mesmo tempo. Uma GPU compatível pode melhorar a detecção, mas esta versão também pode ser testada em CPU com poucas câmeras.
+
+Os vídeos e as credenciais ficam localmente nesta versão. Proteja a pasta do programa e não compartilhe arquivos de configuração que contenham usuários, senhas, endereços privados ou URLs RTSP.
+
+11. LIMITAÇÕES DA VERSÃO ALPHA
+
+Esta versão ainda não possui envio automático para Telegram, processamento em nuvem, autenticação de usuários no painel, instalação como serviço do Windows, atualização automática ou confirmação automática de furto.
+
+12. SUPORTE PARA TESTE
+
+Ao relatar um problema, informe o tipo da fonte, marca e modelo da câmera ou NVR, mensagem exibida, se a fonte funciona em outro aplicativo e o horário aproximado do problema. Se necessário, envie um trecho de `core.log` ou `configurator.log`, removendo senhas, URLs públicas e dados de acesso.

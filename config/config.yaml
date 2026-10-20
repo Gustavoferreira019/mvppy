@@ -1,6 +1,19 @@
 capture:
-  source: "./videos/video.mp4"
-
+  source: null
+  cameras: []
 detector:
-  model_path: "yolov8n-pose.pt"
+  model_path: yolov8n-pose.pt
   confidence: 0.5
+performance:
+  inference_fps: 5
+  display_fps: 20
+  display_size: [640, 360]
+  camera_timeout_seconds: 5
+events:
+  restricted_zone: [0, 0, 1, 1]
+  cooldown_seconds: 10
+recording:
+  output_dir: events/clips
+  fps: 20
+  before_seconds: 10
+  after_seconds: 5

@@ -16,15 +16,33 @@ class Capture:
         self._last_id = 0
         self.running = True
         self.lock = threading.Lock()
+        self.read_interval = 0.0
         threading.Thread(target=self._reader, daemon=True).start()
 
     def _reader(self):
         while self.running:
             if self.cap is None or not self.cap.isOpened():
-                self.cap = cv2.VideoCapture(self.source, cv2.CAP_FFMPEG)
+                # Dispositivos locais (ex.: webcam 0) usam o backend padrão.
+                # URLs RTSP usam FFmpeg para permitir transporte TCP.
+                if isinstance(self.source, int):
+                    # DirectShow evita as falhas assÃ­ncronas do MSMF em webcams
+                    # do Windows durante reconexÃµes.
+                    self.cap = cv2.VideoCapture(self.source, cv2.CAP_DSHOW)
+                else:
+                    self.cap = cv2.VideoCapture(self.source, cv2.CAP_FFMPEG)
                 if not self.cap.isOpened():
                     time.sleep(self.reconnect_delay)
                     continue
+                if isinstance(self.source, int):
+                    for _ in range(5):
+                        if not self.cap.grab():
+                            break
+                # Arquivos devem ser lidos no ritmo original; câmeras ao vivo
+                # já bloqueiam em read() até o próximo quadro.
+                source_text = str(self.source).lower()
+                if isinstance(self.source, str) and not source_text.startswith(("rtsp://", "rtsps://", "http://", "https://")):
+                    fps = self.cap.get(cv2.CAP_PROP_FPS)
+                    self.read_interval = 1.0 / fps if fps and fps > 1 else 0.0
 
             ok, frame = self.cap.read()
             if not ok:
@@ -36,6 +54,8 @@ class Capture:
             with self.lock:
                 self.frame = frame
                 self.frame_id += 1
+            if self.read_interval:
+                time.sleep(self.read_interval)
 
     def read(self):
         """Retorna (frame_id, frame) mais recente, ou (0, None) se ainda não chegou."""
