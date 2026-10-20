@@ -55,7 +55,15 @@ def probe_source(source):
     value = int(source) if source.strip().isdigit() else source.strip()
     cap = cv2.VideoCapture(value, cv2.CAP_DSHOW) if isinstance(value, int) else cv2.VideoCapture(value, cv2.CAP_FFMPEG)
     opened = cap.isOpened()
-    size = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))) if opened else (0, 0)
+    frame = None
+    if opened:
+        opened, frame = cap.read()
+    if opened and frame is not None:
+        height, width = frame.shape[:2]
+        size = (int(width), int(height))
+    else:
+        size = (0, 0)
+        opened = False
     cap.release()
     return opened, *size
 
@@ -83,8 +91,31 @@ class SetupHandler(BaseHTTPRequestHandler):
         if urlsplit(self.path).path == "/onvif/streams":
             query = parse_qs(urlsplit(self.path).query)
             try:
-                streams = get_streams(query.get("xaddr", [""])[0], query.get("user", [""])[0], query.get("password", [""])[0])
-                return self._json(streams)
+                user = query.get("user", [""])[0]
+                password = query.get("password", [""])[0]
+                xaddr = query.get("xaddr", [""])[0].strip()
+                host = query.get("host", [""])[0].strip()
+                candidates = [xaddr] if xaddr else []
+                if host:
+                    base = host if host.startswith(("http://", "https://")) else f"http://{host}"
+                    candidates.extend(
+                        [
+                            f"{base}/onvif/device_service",
+                            f"{base}/onvif/services",
+                        ]
+                    )
+                if not candidates:
+                    raise ValueError("Informe o endereço do serviço ONVIF.")
+                errors = []
+                for candidate in dict.fromkeys(candidates):
+                    try:
+                        streams = get_streams(candidate, user, password)
+                        if streams:
+                            return self._json(streams)
+                    except Exception as error:
+                        errors.append(str(error))
+                detail = errors[-1] if errors else "nenhum perfil de vídeo foi informado"
+                raise RuntimeError(detail)
             except Exception as error:
                 return self._respond(f"Falha ONVIF: {error}", 502, "text/plain; charset=utf-8")
         if urlsplit(self.path).path == "/discover":
@@ -235,12 +266,13 @@ function switchSection(){{ const section=document.getElementById('sectionSelect'
 let lastSourceType='webcam';
 function buildRtsp(){{ const user=document.getElementById('rtspUser').value, pass=document.getElementById('rtspPassword').value, host=document.getElementById('rtspHost').value.trim(), port=document.getElementById('rtspPort').value.trim()||'554', path=document.getElementById('rtspPath').value.trim(); if(!host) return ''; const auth=user ? encodeURIComponent(user)+(pass?':'+encodeURIComponent(pass):'')+'@' : ''; return document.getElementById('protocol').value+'://'+auth+host+':'+port+(path?(path.startsWith('/')?path:'/'+path):''); }}
 function buildPresetPath(){{ const vendor=document.getElementById('vendor').value, channel=document.getElementById('channel').value||'1', stream=document.getElementById('stream').value, path=document.getElementById('rtspPath'); if(vendor==='intelbras') path.value='/cam/realmonitor?channel='+channel+'&subtype='+(stream==='main'?'0':'1'); else if(vendor==='hikvision') path.value='/Streaming/Channels/'+channel+(stream==='main'?'01':'02'); else {{ path.readOnly=false; path.value=''; return; }} path.readOnly=true; }}
-function discoverCameras(){{ const select=document.getElementById('onvifDevices'); select.style.display='block'; select.innerHTML='<option>Procurando câmeras...</option>'; fetch('/discover').then(response=>response.json()).then(devices=>{{ if(!devices.length){{ select.innerHTML='<option>Nenhuma câmera ONVIF encontrada</option>'; return; }} select.innerHTML='<option value="">Selecione uma câmera encontrada</option>'+devices.map((d,i)=>'<option value="'+i+'">'+d.ip+' — '+d.xaddr+'</option>').join(''); select.devices=devices; }}).catch(()=>{{ select.innerHTML='<option>Falha ao buscar câmeras</option>'; }}); }}
-function selectDiscoveredCamera(){{ const select=document.getElementById('onvifDevices'), device=select.devices&&select.devices[select.value]; if(!device)return; document.getElementById('rtspHost').value=device.ip; }}
-function syncSource(){{ if(sourceType.value==='ip'){{ const built=buildRtsp(); if(built) source.value=built; }} }}
+function discoverCameras(){{ const select=document.getElementById('onvifDevices'); select.style.display='block'; select.innerHTML='<option>Procurando câmeras...</option>'; fetch('/discover').then(response=>response.json()).then(devices=>{{ if(!devices.length){{ select.innerHTML='<option value="">Nenhuma câmera ONVIF encontrada</option>'; status.className='status error'; status.style.display='block'; status.textContent='Nenhuma câmera ONVIF encontrada. Verifique se o equipamento está na mesma rede e se o ONVIF está habilitado.'; source.value=''; return; }} status.style.display='none'; select.innerHTML='<option value="">Selecione uma câmera encontrada</option>'+devices.map((d,i)=>'<option value="'+i+'">'+d.ip+' — '+d.xaddr+'</option>').join(''); select.devices=devices; }}).catch(()=>{{ select.innerHTML='<option value="">Falha ao buscar câmeras</option>'; status.className='status error'; status.style.display='block'; status.textContent='Não foi possível procurar câmeras ONVIF nesta rede.'; }}); }}
+function addRtspCredentials(uri){{ try{{ const url=new URL(uri); const user=document.getElementById('rtspUser').value.trim(), pass=document.getElementById('rtspPassword').value; if(user) url.username=user; if(pass) url.password=pass; return url.toString(); }}catch(error){{ return uri; }} }}
+function selectDiscoveredCamera(){{ const select=document.getElementById('onvifDevices'), device=select.devices&&select.devices[select.value]; if(!device)return; document.getElementById('rtspHost').value=device.ip; status.className='status'; status.style.display='block'; status.textContent='Obtendo o stream da câmera ONVIF...'; const params=new URLSearchParams({{xaddr:device.xaddr,user:document.getElementById('rtspUser').value,password:document.getElementById('rtspPassword').value}}); fetch('/onvif/streams?'+params.toString()).then(async response=>{{ const streams=await response.json(); if(!response.ok||!streams.length) throw new Error('A câmera ONVIF não informou um stream de vídeo.'); source.value=addRtspCredentials(streams[0].uri); status.className='status success'; status.textContent='Câmera ONVIF encontrada. Stream pronto para teste.'; }}).catch(error=>{{ source.value=''; status.className='status error'; status.style.display='block'; status.textContent=error.message||'Não foi possível obter o stream ONVIF.'; }}); }}
+function syncSource(){{ if(sourceType.value==='webcam') source.value=document.getElementById('webcamDevices').value; else if(sourceType.value==='ip'){{ const built=buildRtsp(); if(built) source.value=built; }} else if(sourceType.value==='onvif' && source.value) source.value=addRtspCredentials(source.value); }}
 function validateSave(){{ syncSource(); const name=document.querySelector('[name=camera_name]').value.trim(); nameStatus.className='status'; nameStatus.style.display='none'; if(!name){{ nameStatus.className='status error'; nameStatus.style.display='block'; nameStatus.textContent='Informe um nome para a câmera antes de salvar.'; return false; }} return true; }}
 function updateSourceMode(){{ const type=sourceType.value; if(type!==lastSourceType){{ source.value=''; document.getElementById('webcamDevices').value=''; ['rtspUser','rtspPassword','rtspHost','rtspPath'].forEach(id=>document.getElementById(id).value=''); img.src=''; img.style.display='none'; canvas.style.display='none'; retryButton.style.display='none'; status.className='status'; status.textContent=''; status.style.display='none'; }} lastSourceType=type; webcamControls.style.display=type==='webcam'?'block':'none'; ipControls.style.display=(type==='ip'||type==='onvif')?'block':'none'; onvifDiscovery.style.display=type==='onvif'?'block':'none'; manualRtsp.style.display=type==='ip'?'block':'none'; if(type==='ip') buildPresetPath(); }}
-function testConnection(){{ syncSource(); status.className='status'; status.style.display='block'; const type=sourceType.value; if(type==='webcam' && !/^[0-9]+$/.test(source.value)){{ status.className='status error'; status.textContent='Selecione uma webcam disponível antes de testar.'; return; }} if(type==='ip' && (!document.getElementById('rtspHost').value.trim() || !document.getElementById('rtspPort').value.trim() || !document.getElementById('rtspPath').value.trim())){{ status.className='status error'; status.textContent='Preencha endereço IP, porta e caminho RTSP antes de testar.'; return; }} if(type==='onvif' && (!document.getElementById('rtspHost').value.trim() || !document.getElementById('rtspUser').value.trim() || !document.getElementById('rtspPassword').value.trim())){{ status.className='status error'; status.textContent='Preencha câmera, usuário e senha ONVIF antes de testar.'; return; }} status.textContent='Testando conexão...'; fetch('/test?type='+encodeURIComponent(type)+'&source='+encodeURIComponent(source.value)).then(async response=>{{ const message=await response.text(); status.className='status '+(response.ok?'success':'error'); status.textContent=message; if(response.ok) loadPreview(); }}).catch(()=>{{ status.className='status error'; status.textContent='Não foi possível testar a fonte.'; }}); }}
+function testConnection(){{ syncSource(); status.className='status'; status.style.display='block'; const type=sourceType.value; if(type==='webcam' && !/^[0-9]+$/.test(source.value)){{ status.className='status error'; status.textContent='Selecione uma webcam disponível antes de testar.'; return; }} if(type==='ip' && (!document.getElementById('rtspHost').value.trim() || !document.getElementById('rtspPort').value.trim() || !document.getElementById('rtspPath').value.trim())){{ status.className='status error'; status.textContent='Preencha endereço IP, porta e caminho RTSP antes de testar.'; return; }} if(type==='onvif' && (!document.getElementById('rtspHost').value.trim() || !document.getElementById('rtspUser').value.trim() || !document.getElementById('rtspPassword').value.trim())){{ status.className='status error'; status.textContent='Preencha endereço, usuário e senha ONVIF antes de testar.'; return; }} if(type==='onvif' && !source.value){{ status.textContent='Obtendo o stream ONVIF pelo endereço informado...'; const params=new URLSearchParams({{host:document.getElementById('rtspHost').value.trim(),user:document.getElementById('rtspUser').value,password:document.getElementById('rtspPassword').value}}); fetch('/onvif/streams?'+params.toString()).then(async response=>{{ const streams=await response.json(); if(!response.ok||!streams.length) throw new Error('Não foi possível obter um stream ONVIF para esse endereço.'); source.value=addRtspCredentials(streams[0].uri); testConnection(); }}).catch(error=>{{ status.className='status error'; status.textContent=error.message||'Não foi possível obter o stream ONVIF.'; }}); return; }} status.textContent='Testando conexão...'; fetch('/test?type='+encodeURIComponent(type)+'&source='+encodeURIComponent(source.value)).then(async response=>{{ const message=await response.text(); status.className='status '+(response.ok?'success':'error'); status.textContent=message; if(response.ok) loadPreview(); }}).catch(()=>{{ status.className='status error'; status.textContent='Não foi possível testar a fonte.'; }}); }}
 function loadPreview(){ if(!source.value){{ return; }} const overlay=document.getElementById('previewOverlay'); retryButton.style.display='none'; if(overlay) overlay.style.display='none'; img.style.display='none'; canvas.style.display='none'; img.onload=()=>{{ if(overlay) overlay.style.display='none'; img.style.display='block'; canvas.style.display='block'; retryButton.style.display='none'; canvas.width=img.clientWidth; canvas.height=img.clientHeight; drawZone(); }}; img.onerror=()=>{{ img.style.display='none'; canvas.style.display='none'; if(overlay){{ overlay.textContent=sourceType.value==='webcam'?'Câmera/NVR sendo utilizada':'OFFLINE'; overlay.style.display='flex'; }} retryButton.style.display='inline-block'; clearTimeout(window.previewRetryTimer); window.previewRetryTimer=setTimeout(loadPreview,5000); }}; img.src='/stream?source='+encodeURIComponent(source.value)+'&t='+Date.now(); clearInterval(window.previewPollTimer); window.previewPollTimer=setInterval(()=>{{ if(source.value && previewSection.style.display!=='none') img.src='/stream?source='+encodeURIComponent(source.value)+'&t='+Date.now(); }},1500); }
 function drawZone(){ ctx.clearRect(0,0,canvas.width,canvas.height); const x1=+document.querySelector('[name=x1]').value*canvas.width,y1=+document.querySelector('[name=y1]').value*canvas.height,x2=+document.querySelector('[name=x2]').value*canvas.width,y2=+document.querySelector('[name=y2]').value*canvas.height; ctx.strokeStyle='#ff7a00';ctx.lineWidth=3;ctx.strokeRect(x1,y1,x2-x1,y2-y1); }
 let start=null; canvas.addEventListener('mousedown',e=>{const r=canvas.getBoundingClientRect();start=[e.clientX-r.left,e.clientY-r.top];}); canvas.addEventListener('mouseup',e=>{if(!start)return;const r=canvas.getBoundingClientRect(),end=[e.clientX-r.left,e.clientY-r.top],x1=Math.min(start[0],end[0])/canvas.width,y1=Math.min(start[1],end[1])/canvas.height,x2=Math.max(start[0],end[0])/canvas.width,y2=Math.max(start[1],end[1])/canvas.height; [['x1',x1],['y1',y1],['x2',x2],['y2',y2]].forEach(([n,v])=>document.querySelector('[name='+n+']').value=v.toFixed(4));start=null;drawZone();});
@@ -274,7 +306,7 @@ setMonitoringView(false);
         page = page.replace("setMonitoringView(false);\n</script></div>", """function handleSave(event){ event.preventDefault(); if(!validateSave()) return false; const button=document.getElementById('saveButton'); button.disabled=true; status.className='status'; status.style.display='block'; status.textContent='Salvando configuração...'; const form=document.getElementById('cameraForm'); const data=new URLSearchParams(new FormData(form)); data.set('action','save'); data.set('camera_name',document.querySelector('[name=camera_name]').value.trim()); data.set('source',source.value); fetch('/',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body:data.toString()}).then(async response=>{ const message=await response.text(); if(!response.ok) throw new Error(message.replace(/<[^>]*>/g,'').trim()||'Falha no servidor.'); status.className='status success'; status.textContent='Configuração salva com sucesso.'; document.getElementById('cameraId').value=data.get('camera_id')||''; setTimeout(()=>location.reload(),500); }).catch(error=>{ status.className='status error'; status.textContent=error.message||'Não foi possível salvar a configuração.'; }).finally(()=>{ button.disabled=false; }); return false; }
 setMonitoringView(false);
 </script></div>""")
-        page = page.replace("</script></div>", "syncSource=function(){ if(sourceType.value==='webcam') source.value=document.getElementById('webcamDevices').value; else if(sourceType.value==='ip'){ const built=buildRtsp(); if(built) source.value=built; } }; const _testConnection=testConnection; testConnection=function(){ syncSource(); return _testConnection(); };\n</script></div>")
+        page = page.replace("</script></div>", "syncSource=function(){ if(sourceType.value==='webcam') source.value=document.getElementById('webcamDevices').value; else if(sourceType.value==='ip'){ const built=buildRtsp(); if(built) source.value=built; } else if(sourceType.value==='onvif' && source.value) source.value=addRtspCredentials(source.value); }; const _testConnection=testConnection; testConnection=function(){ syncSource(); return _testConnection(); };\n</script></div>")
         # O status de conexão deve ficar associado ao nome da câmera, logo abaixo
         # do campo, sem depender de reordenação via JavaScript no navegador.
         self._respond(page)
@@ -321,13 +353,21 @@ setMonitoringView(false);
         if not cap.isOpened():
             cap.release()
             return self._respond("Não foi possível abrir a fonte.", 502, "text/plain; charset=utf-8")
+        first_ok, first_frame = cap.read()
+        if not first_ok or first_frame is None:
+            cap.release()
+            return self._respond(
+                "A fonte foi aberta, mas não entregou nenhum quadro. Verifique o caminho RTSP, as credenciais e o stream.",
+                502,
+                "text/plain; charset=utf-8",
+            )
         self.send_response(200)
         self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
         try:
+            ok, frame = first_ok, first_frame
             while True:
-                ok, frame = cap.read()
                 if not ok:
                     break
                 ok, encoded = cv2.imencode(".jpg", frame)
@@ -337,6 +377,7 @@ setMonitoringView(false);
                 self.wfile.write(encoded.tobytes())
                 self.wfile.write(b"\r\n")
                 time.sleep(0.1)
+                ok, frame = cap.read()
         except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
             pass
         finally:
