@@ -30,8 +30,25 @@ def discover(timeout=2.0):
                 root = ET.fromstring(payload)
             except ET.ParseError:
                 continue
-            texts = [element.text.strip() for element in root.iter() if element.text and element.text.strip()]
-            xaddr = next((text for text in texts if text.startswith(("http://", "https://"))), "")
+            xaddr = ""
+            # O endereço da câmera fica em XAddrs. O envelope também contém
+            # URLs da ação SOAP; escolher a primeira URL do XML causa falsos
+            # dispositivos e impede a conexão posterior.
+            for element in root.iter():
+                if element.tag.rsplit("}", 1)[-1] not in {"XAddrs", "XAddr"}:
+                    continue
+                values = (element.text or "").split()
+                xaddr = next((value for value in values if value.startswith(("http://", "https://"))), "")
+                if xaddr:
+                    break
+            if not xaddr:
+                # Compatibilidade com respostas simplificadas que não usam
+                # a tag XAddrs, evitando URLs de namespaces SOAP.
+                texts = [element.text.strip() for element in root.iter() if element.text and element.text.strip()]
+                xaddr = next(
+                    (text for text in texts if text.startswith(("http://", "https://")) and "ws-discovery" not in text),
+                    "",
+                )
             if xaddr:
                 devices[xaddr] = {"xaddr": xaddr, "ip": address[0]}
     finally:

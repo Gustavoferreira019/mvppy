@@ -71,6 +71,20 @@ Depois abra `http://127.0.0.1:8765`. O painel precisa estar ativo para configura
 
 Também existe o `launcher.py`, que inicia os dois processos quando os executáveis internos do pacote estão presentes. Rodar `python launcher.py` diretamente só é útil durante a preparação do pacote; para uso do cliente, utilize o executável empacotado descrito abaixo.
 
+## Simulador ONVIF para desenvolvimento
+
+Para testar a descoberta ONVIF sem uma câmera física, execute o simulador em um terceiro terminal, na raiz do projeto:
+
+```powershell
+venv\Scripts\python.exe scripts\simulate_onvif_camera.py
+```
+
+Ele anuncia uma câmera de teste por WS-Discovery na rede local e fornece um stream MJPEG em `http://127.0.0.1:8890/video.mjpg`. A imagem é sintética, com o nome do dispositivo e um relógio, para confirmar que a prévia está realmente recebendo quadros. Qualquer usuário e senha são aceitos pelo simulador.
+
+No painel, siga o fluxo normal: selecione **Câmera ONVIF**, clique em **Buscar câmeras ONVIF**, escolha **VIGIL.AI Câmera de Teste**, informe usuário e senha e clique em **Testar conexão**. O dispositivo deve aparecer na lista, o perfil **Principal** deve ser obtido e a prévia/zona deve ser liberada. Depois, ele pode ser cadastrado e editado como qualquer câmera real.
+
+Pressione `Ctrl+C` no terminal do simulador para removê-lo da rede. O script é uma ferramenta de desenvolvimento e não é copiado para o ZIP do cliente. Se o Windows Firewall bloquear descoberta multicast, permita o Python na rede privada ou execute o painel e o simulador na mesma rede/perfil; o protocolo WS-Discovery usa UDP 3702.
+
 ## Executar o pacote Alpha
 
 O artefato gerado é `dist/VigilAI-alpha-0.1.0.zip`. Extraia o ZIP em uma pasta com permissão de escrita e execute `VigilAI-alpha-0.1.0.exe`. O launcher inicia o núcleo e o configurador, abre o navegador local e encerra o configurador quando o núcleo termina.
