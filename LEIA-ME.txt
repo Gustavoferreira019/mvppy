@@ -44,7 +44,7 @@ Depois de cadastrada, a webcam fica vinculada àquela câmera e não pode ser us
 
 CÂMERA ONVIF (WI-FI OU REDE)
 
-Informe o endereço IP ou host, usuário e senha. Use **Buscar câmeras ONVIF** e selecione o dispositivo encontrado. O equipamento precisa estar acessível na mesma rede e ter ONVIF habilitado.
+Use **Buscar câmeras ONVIF** e selecione o dispositivo encontrado. O endereço IP ou host será preenchido automaticamente e ficará bloqueado para edição. Informe usuário e senha. O equipamento precisa estar acessível na mesma rede e ter ONVIF habilitado.
 
 Quando a câmera fornecer o endereço de vídeo, o VIGIL.AI preencherá os dados automaticamente. Se nenhum dispositivo for encontrado, confira a rede, o endereço, as credenciais e as permissões do equipamento. Alguns modelos não oferecem ONVIF; nesses casos, use RTSP manual.
 

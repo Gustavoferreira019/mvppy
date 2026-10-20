@@ -108,7 +108,7 @@ Ao mudar o tipo de fonte, a seleção anterior, a prévia, a zona e o estado do 
 
 **Webcam do notebook/USB** — selecione uma webcam detectada pelo computador. O valor exibido como `Webcam 0` corresponde ao índice usado pelo OpenCV. O mesmo índice fica reservado ao cadastro até a câmera ser excluída.
 
-**Câmera ONVIF (Wi-Fi ou rede)** — informe endereço, usuário e senha, busque os dispositivos ONVIF e selecione o perfil/canal encontrado. O VIGIL.AI obtém o URI de vídeo quando o equipamento fornece essa informação; o usuário não precisa montar o caminho RTSP.
+**Câmera ONVIF (Wi-Fi ou rede)** — clique em **Buscar câmeras ONVIF** e selecione o dispositivo encontrado. O endereço é preenchido automaticamente e fica somente leitura; informe apenas usuário e senha. O VIGIL.AI obtém o URI de vídeo quando o equipamento fornece essa informação; o usuário não precisa montar o caminho RTSP.
 
 **Câmera de rede (RTSP manual)** — informe host/IP, credenciais, fabricante, canal, stream, protocolo e porta. O campo de caminho RTSP é preenchido pelo sistema a partir desses dados e fica somente leitura. Use esta opção quando a câmera/NVR não responder à descoberta ONVIF.
 
