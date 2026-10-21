@@ -2,8 +2,9 @@ capture:
   source: null
   cameras: []
 detector:
-  model_path: yolov8n-pose.pt
+  model_path: yolov8n.pt
   confidence: 0.5
+  classes: [person, car, dog, cat, bird, backpack, handbag, suitcase, bottle, cup, laptop, cell phone]
 performance:
   inference_fps: 5
   display_fps: 20

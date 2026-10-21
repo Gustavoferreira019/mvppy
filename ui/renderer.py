@@ -11,20 +11,18 @@ SKELETON = [
 
 class Renderer:
 
-    def draw(self, frame, people):
+    def draw(self, frame, detections):
         frame_copy = frame.copy()
 
-        for person in people:
-            self._draw_box(frame_copy, person)
-
-            if person.keypoints is not None:
-                self._draw_skeleton(frame_copy, person.keypoints)
+        for detection in detections:
+            self._draw_box(frame_copy, detection)
 
         return frame_copy
 
-    def _draw_box(self, image, person):
-        x1, y1, x2, y2 = map(int, person.box)
-        label = f"id {person.track_id if person.track_id is not None else '?'}"
+    def _draw_box(self, image, detection):
+        x1, y1, x2, y2 = map(int, detection.box)
+        track = detection.track_id if detection.track_id is not None else "?"
+        label = f"{detection.label} #{track} {detection.conf:.2f}"
 
         cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 2)
         cv2.putText(image, label, (x1, max(y1 - 6, 12)),

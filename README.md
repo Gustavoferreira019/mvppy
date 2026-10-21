@@ -1,6 +1,6 @@
-# VIGIL.AI — Alpha 0.1.0
+# VIGIL.AI — Alpha 0.2.0
 
-VIGIL.AI é um protótipo de vigilância inteligente para executar localmente, receber vídeo de câmeras, detectar pessoas em uma zona definida e salvar um clipe do evento. Esta documentação descreve o estado da versão Alpha para desenvolvedores e para quem precisa preparar uma instalação de teste.
+VIGIL.AI é um protótipo de vigilância inteligente para executar localmente, receber vídeo de câmeras, detectar pessoas e objetos configurados em uma zona definida e salvar um clipe do evento. Esta documentação descreve o estado da versão Alpha para desenvolvedores e para quem precisa preparar uma instalação de teste.
 
 ## O que existe nesta versão
 
@@ -10,14 +10,14 @@ VIGIL.AI é um protótipo de vigilância inteligente para executar localmente, r
 - Painel local para cadastrar, editar, testar e excluir fontes, com indicação do estado de cada fonte.
 - Descoberta de dispositivos ONVIF na rede local quando o equipamento anuncia esse protocolo.
 - Configuração visual da zona monitorada em coordenadas normalizadas de 0 a 1.
-- Detecção de pessoas com YOLOv8 Pose e geração de evento quando uma pessoa entra na zona.
+- Detecção configurável de pessoas e objetos comuns do modelo COCO com YOLOv8, gerando eventos quando uma detecção entra na zona.
 - Buffer anterior e gravação posterior ao evento, com vídeo MP4 e metadados JSON.
 - Recarga da configuração em runtime: alterações salvas no painel são percebidas pelo processo de monitoramento sem reiniciar o serviço.
 - Prévia no painel, estado offline e aviso quando a fonte está sendo utilizada pelo monitoramento.
 
 ## Limites importantes do Alpha
 
-O Alpha detecta a presença de uma pessoa dentro de uma zona. Ele não conclui sozinho que houve furto, identifica produtos ou substitui uma análise humana. A inferência é local, as credenciais ficam no YAML em texto simples e o envio para Telegram/nuvem, autenticação de usuários, instalador Windows e execução como serviço ainda não fazem parte desta versão.
+O Alpha reconhece classes genéricas do modelo COCO, mas não conclui sozinho que houve furto, identifica marcas/SKUs ou substitui uma análise humana. Latas e mercadorias específicas exigem um modelo treinado para o ambiente do cliente. A inferência é local, as credenciais ficam no YAML em texto simples e o envio para Telegram/nuvem, autenticação de usuários, instalador Windows e execução como serviço ainda não fazem parte desta versão.
 
 ## Arquitetura
 
@@ -26,7 +26,7 @@ O Alpha detecta a presença de uma pessoa dentro de uma zona. Ele não conclui s
 | `app.py` | Processo de monitoramento, captura, inferência, eventos, gravação e atualização de `runtime_status.json`. |
 | `setup_server.py` | Painel HTTP local em `http://127.0.0.1:8765` para configurar as fontes. |
 | `capture/capture.py` | Captura em thread e reconexão de fontes. |
-| `detector/detector.py` | Carregamento do modelo e detecção/rastreamento de pessoas. |
+| `detector/detector.py` | Carregamento do modelo, filtro de classes e detecção/rastreamento. |
 | `events/engine.py` | Regra de entrada na zona e cooldown entre eventos. |
 | `recording/recorder.py` | Buffer circular, MP4 e JSON do evento. |
 | `ui/renderer.py` | Renderização da grade de câmeras e sobreposição da zona. |
@@ -39,7 +39,7 @@ O Alpha detecta a presença de uma pessoa dentro de uma zona. Ele não conclui s
 - Windows 10/11 (o fluxo atual usa OpenCV e captura DirectShow/Media Foundation).
 - Python 3.10 ou superior; o ambiente usado para o Alpha é Python 3.13.
 - Uma câmera local, uma URL RTSP ou um dispositivo ONVIF para testar.
-- O arquivo `yolov8n-pose.pt` na raiz, ou outro modelo configurado em `detector.model_path`.
+- O arquivo `yolov8n.pt` na raiz, ou outro modelo compatível configurado em `detector.model_path`.
 - CPU funciona para testes. Uma GPU compatível com PyTorch melhora o desempenho quando há várias câmeras.
 
 ## Instalação para desenvolver
@@ -87,7 +87,7 @@ Pressione `Ctrl+C` no terminal do simulador para removê-lo da rede. O script é
 
 ## Executar o pacote Alpha
 
-O artefato gerado é `dist/VigilAI-alpha-0.1.0.zip`. Extraia o ZIP em uma pasta com permissão de escrita e execute `VigilAI-alpha-0.1.0.exe`. O launcher inicia o núcleo e o configurador, abre o navegador local e encerra o configurador quando o núcleo termina.
+O artefato da próxima entrega é `dist/VigilAI-alpha-0.2.0.zip`. Extraia o ZIP em uma pasta com permissão de escrita e execute `VigilAI-alpha-0.2.0.exe`. O launcher inicia o núcleo e o configurador, abre o navegador local e encerra o configurador quando o núcleo termina.
 
 A pasta extraída precisa permanecer inteira: o executável depende de `core/`, `configurator/`, `config/`, do modelo e dos arquivos de runtime. O YAML e os clipes ficam na pasta do pacote, para que a instalação seja portátil e possa ser copiada para outro computador.
 
@@ -118,7 +118,7 @@ Para um NVR com várias câmeras, cada canal que será monitorado deve ter um ca
 
 A zona é armazenada como `[x1, y1, x2, y2]`, com todos os valores entre `0` e `1`. `0,0` é o canto superior esquerdo e `1,1` é o canto inferior direito. O painel converte o desenho para essa escala, então a zona continua válida mesmo quando a resolução muda.
 
-Quando o centro da caixa de uma pessoa entra na zona, o motor cria um evento `person_in_restricted_zone`. O cooldown evita repetir o mesmo alerta continuamente. O gravador mantém os últimos `recording.before_seconds` de vídeo e continua por `recording.after_seconds` depois do evento.
+Quando o centro da caixa de uma detecção configurada entra na zona, o motor cria um evento como `person_in_restricted_zone` ou `handbag_in_restricted_zone`. O JSON inclui a classe, o ID rastreado e a confiança. O cooldown evita repetir o mesmo alerta continuamente. O gravador mantém os últimos `recording.before_seconds` de vídeo e continua por `recording.after_seconds` depois do evento.
 
 Por padrão, os arquivos são gravados em `events/clips/`:
 
@@ -139,8 +139,9 @@ capture:
       enabled: true
 
 detector:
-  model_path: yolov8n-pose.pt
+  model_path: yolov8n.pt
   confidence: 0.5
+  classes: [person, car, dog, cat, bird, backpack, handbag, suitcase, bottle, cup, laptop, cell phone]
 
 performance:
   inference_fps: 5
@@ -158,7 +159,7 @@ recording:
   after_seconds: 5
 ```
 
-Prefira alterar o YAML pelo painel. Se for necessário editar manualmente, mantenha `source`, `id`, `zone` e `enabled` válidos. O `app.py` recarrega o arquivo quando seu conteúdo muda e atualiza as câmeras em runtime.
+Prefira alterar o YAML pelo painel. A lista `detector.classes` define as classes analisadas; use os nomes do modelo COCO em inglês ou deixe a lista vazia para analisar todas as classes disponíveis. Se for necessário editar manualmente, mantenha `source`, `id`, `zone` e `enabled` válidos. O `app.py` recarrega o arquivo quando seu conteúdo muda e atualiza as câmeras e classes em runtime.
 
 ## Estado e diagnóstico
 
@@ -187,10 +188,10 @@ Não inclua ambiente virtual, clipes, estados de execução, caches, builds ou c
 O build depende do PyInstaller e das dependências instaladas no ambiente virtual. Os arquivos `.spec`, `build/`, `dist/` e `.release-work/` são saídas locais e estão ignorados no Git. Gere uma build somente quando houver uma versão para entregar:
 
 ```powershell
-.\scripts\build-release.ps1 --name alpha-0.1.0
+.\scripts\build-release.ps1 --name alpha-0.2.0
 ```
 
-`--name` é obrigatório e recebe o identificador da versão. Por exemplo, `--name alpha-0.1.1` gera `dist/VigilAI-alpha-0.1.1.zip`, contendo o launcher `VigilAI-alpha-0.1.1.exe`. Se o parâmetro for omitido, o script encerra sem iniciar a build.
+`--name` é obrigatório e recebe o identificador da versão. Por exemplo, `--name alpha-0.2.0` gera `dist/VigilAI-alpha-0.2.0.zip`, contendo o launcher `VigilAI-alpha-0.2.0.exe`. Se o parâmetro for omitido, o script encerra sem iniciar a build.
 
 O script mostra uma barra de progresso por etapas: geração do launcher, configurador, núcleo, cópia dos arquivos e compactação. O percentual é uma estimativa baseada nas fases informadas pelo PyInstaller; ele serve para acompanhar o andamento, enquanto o processo continua podendo demorar por causa do PyTorch, torchvision, OpenCV, YOLO e do modelo incluído.
 

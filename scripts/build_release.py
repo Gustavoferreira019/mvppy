@@ -121,14 +121,24 @@ def build(
 
 def copy_manual(package: Path, archive_name: str, launcher_name: str) -> None:
     manual = (ROOT / "LEIA-ME.txt").read_text(encoding="utf-8")
-    for default_archive in (
-        "VigilAI-Alpha-0.1.0-single.zip",
-        "VigilAI-alpha-0.1.0-single.zip",
-        "VigilAI-alpha-0.1.0.zip",
-    ):
-        manual = manual.replace(default_archive, archive_name)
-    for default_launcher in ("VigilAI-Alpha-0.1.0.exe", "VigilAI-alpha-0.1.0.exe"):
-        manual = manual.replace(default_launcher, launcher_name)
+    version = re.search(r"alpha-\d+\.\d+\.\d+", archive_name, re.IGNORECASE)
+    if version:
+        manual = re.sub(
+            r"Versão Alpha \d+\.\d+\.\d+",
+            f"Versão {version.group(0).replace('-', ' ').title()}",
+            manual,
+            count=1,
+        )
+    manual = re.sub(
+        r"VigilAI-(?:Alpha|alpha)-\d+\.\d+\.\d+(?:-single)?\.zip",
+        archive_name,
+        manual,
+    )
+    manual = re.sub(
+        r"VigilAI-(?:Alpha|alpha)-\d+\.\d+\.\d+\.exe",
+        launcher_name,
+        manual,
+    )
     (package / "LEIA-ME.txt").write_text(manual, encoding="utf-8")
 
 
@@ -151,7 +161,7 @@ def main() -> None:
             "Execute usando venv\\Scripts\\python.exe."
         )
     for required in (
-        ROOT / "yolov8n-pose.pt",
+        ROOT / "yolov8n.pt",
         ROOT / "config" / "config.yaml",
         ROOT / "LEIA-ME.txt",
     ):
@@ -178,7 +188,7 @@ def main() -> None:
         shutil.copy2(configurator, package / "configurator" / configurator.name)
         shutil.copy2(core, package / "core" / core.name)
         shutil.copy2(ROOT / "config" / "config.yaml", package / "core" / "config" / "config.yaml")
-        shutil.copy2(ROOT / "yolov8n-pose.pt", package / "core" / "yolov8n-pose.pt")
+        shutil.copy2(ROOT / "yolov8n.pt", package / "core" / "yolov8n.pt")
         copy_manual(package, archive_name, launcher_name)
 
         for previous_archive in (

@@ -25,7 +25,12 @@ detector_config = config["detector"]
 model_path = Path(detector_config["model_path"])
 if not model_path.is_absolute():
     model_path = BASE_DIR / model_path
-detector = Detector(str(model_path), detector_config["confidence"], detector_config.get("imgsz", 640))
+detector = Detector(
+    str(model_path),
+    detector_config["confidence"],
+    detector_config.get("imgsz", 640),
+    detector_config.get("classes"),
+)
 renderer = Renderer()
 RUNTIME_PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
 captures = {}
@@ -97,6 +102,10 @@ def camera_configs_from(current_config):
 
 def reload_runtime(new_config):
     global config, inference_interval, display_interval, display_size, camera_timeout
+
+    new_detector_config = new_config.get("detector", {})
+    detector.confidence = float(new_detector_config.get("confidence", detector.confidence))
+    detector.configure_classes(new_detector_config.get("classes"))
 
     desired = {camera["name"]: camera for camera in camera_configs_from(new_config)}
     for name in list(captures):
