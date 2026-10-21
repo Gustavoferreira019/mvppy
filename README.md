@@ -1,6 +1,6 @@
 # VIGIL.AI — Alpha 0.2.0
 
-VIGIL.AI é um protótipo de vigilância inteligente para executar localmente, receber vídeo de câmeras, detectar pessoas e objetos configurados em uma zona definida e salvar um clipe do evento. Esta documentação descreve o estado da versão Alpha para desenvolvedores e para quem precisa preparar uma instalação de teste.
+VIGIL.AI é um protótipo de vigilância inteligente para executar localmente, receber vídeo de câmeras, detectar pessoas e objetos configurados em áreas nomeadas e salvar clipes originais e analisados do evento. Esta documentação descreve o estado da versão Alpha para desenvolvedores e para quem precisa preparar uma instalação de teste.
 
 ## O que existe nesta versão
 
@@ -9,11 +9,22 @@ VIGIL.AI é um protótipo de vigilância inteligente para executar localmente, r
 - Vínculo exclusivo de uma fonte: depois que uma webcam, câmera IP, NVR ou canal é cadastrado, ela fica reservada até o cadastro ser excluído.
 - Painel local para cadastrar, editar, testar e excluir fontes, com indicação do estado de cada fonte.
 - Descoberta de dispositivos ONVIF na rede local quando o equipamento anuncia esse protocolo.
-- Configuração visual da zona monitorada em coordenadas normalizadas de 0 a 1.
+- Configuração visual de áreas nomeadas por câmera em coordenadas normalizadas de 0 a 1.
 - Detecção configurável de pessoas e objetos comuns do modelo COCO com YOLOv8, gerando eventos quando uma detecção entra na zona.
 - Buffer anterior e gravação posterior ao evento, com vídeo MP4 e metadados JSON.
 - Recarga da configuração em runtime: alterações salvas no painel são percebidas pelo processo de monitoramento sem reiniciar o serviço.
 - Prévia no painel, estado offline e aviso quando a fonte está sendo utilizada pelo monitoramento.
+
+## Configuração de detecção por câmera
+
+A tela de edição de cada câmera agora possui dois blocos de análise:
+
+- **Detecções monitoradas**, organizadas em Pessoas, Volumes pessoais e Objetos comuns. A seleção fica salva no cadastro daquela câmera.
+- **Áreas monitoradas**, com nome e tipo (Área de interesse, Produtos, Caixa, Entrada ou Saída). A área é desenhada sobre a prévia e armazenada em coordenadas normalizadas.
+
+O núcleo executa uma inferência com a união das classes usadas pelas câmeras e filtra os eventos conforme o perfil de cada uma. Assim, duas câmeras podem observar classes diferentes sem duplicar o modelo na memória. Os eventos informam também `zone_id` e `zone_name`.
+
+A versão atual registra entradas de classes nas áreas configuradas. Ela ainda não associa uma bolsa a uma pessoa nem conclui que houve furto; essas regras temporais serão adicionadas depois da validação dos perfis, áreas e eventos básicos.
 
 ## Limites importantes do Alpha
 
@@ -27,9 +38,9 @@ O Alpha reconhece classes genéricas do modelo COCO, mas não conclui sozinho qu
 | `setup_server.py` | Painel HTTP local em `http://127.0.0.1:8765` para configurar as fontes. |
 | `capture/capture.py` | Captura em thread e reconexão de fontes. |
 | `detector/detector.py` | Carregamento do modelo, filtro de classes e detecção/rastreamento. |
-| `events/engine.py` | Regra de entrada na zona e cooldown entre eventos. |
-| `recording/recorder.py` | Buffer circular, MP4 e JSON do evento. |
-| `ui/renderer.py` | Renderização da grade de câmeras e sobreposição da zona. |
+| `events/engine.py` | Filtro por perfil da câmera, áreas nomeadas e cooldown entre eventos. |
+| `recording/recorder.py` | Buffers circular, vídeo original, vídeo analisado e JSON do evento. |
+| `ui/renderer.py` | Renderização da grade, caixas coloridas, classes e confiança das detecções. |
 | `onvif_client.py` / `onvif_discovery.py` | Descoberta ONVIF e obtenção do perfil de vídeo. |
 | `launcher.py` | Orquestração do pacote executável: inicia o núcleo, o configurador e abre o navegador. |
 | `config/config.yaml` | Configuração persistida das câmeras e parâmetros do sistema. |
@@ -112,18 +123,19 @@ Ao mudar o tipo de fonte, a seleção anterior, a prévia, a zona e o estado do 
 
 **Câmera de rede (RTSP manual)** — informe host/IP, credenciais, fabricante, canal, stream, protocolo e porta. O campo de caminho RTSP é preenchido pelo sistema a partir desses dados e fica somente leitura. Use esta opção quando a câmera/NVR não responder à descoberta ONVIF.
 
-Para um NVR com várias câmeras, cada canal que será monitorado deve ter um cadastro próprio (por exemplo, `NVR Entrada`, `NVR Caixa` e `NVR Estoque`). Isso permite uma zona e um estado independente por canal. Canais sem cadastro não entram no processamento.
+Para um NVR com várias câmeras, cada canal que será monitorado deve ter um cadastro próprio (por exemplo, `NVR Entrada`, `NVR Caixa` e `NVR Estoque`). Isso permite áreas, classes e um estado independente por canal. Canais sem cadastro não entram no processamento.
 
 ## Zona, eventos e clipes
 
-A zona é armazenada como `[x1, y1, x2, y2]`, com todos os valores entre `0` e `1`. `0,0` é o canto superior esquerdo e `1,1` é o canto inferior direito. O painel converte o desenho para essa escala, então a zona continua válida mesmo quando a resolução muda.
+Cada área é armazenada como `[x1, y1, x2, y2]`, com todos os valores entre `0` e `1`, dentro da lista `camera.zones`. `0,0` é o canto superior esquerdo e `1,1` é o canto inferior direito. O painel converte o desenho para essa escala, então as áreas continuam válidas mesmo quando a resolução muda.
 
-Quando o centro da caixa de uma detecção configurada entra na zona, o motor cria um evento como `person_in_restricted_zone` ou `handbag_in_restricted_zone`. O JSON inclui a classe, o ID rastreado e a confiança. O cooldown evita repetir o mesmo alerta continuamente. O gravador mantém os últimos `recording.before_seconds` de vídeo e continua por `recording.after_seconds` depois do evento.
+Quando o centro da caixa de uma detecção selecionada entra em uma área, o motor cria um evento como `person_in_restricted_zone` ou `handbag_in_restricted_zone`. O JSON inclui classe, ID rastreado, confiança, `zone_id` e `zone_name`. O cooldown evita repetir o mesmo alerta continuamente. O gravador mantém os últimos `recording.before_seconds` de vídeo e continua por `recording.after_seconds` depois do evento.
 
 Por padrão, os arquivos são gravados em `events/clips/`:
 
-- `event_YYYYMMDD_HHMMSS_microssegundos.mp4`: clipe do evento.
-- `event_YYYYMMDD_HHMMSS_microssegundos.json`: tipo, confiança, zona, horário e caminhos dos arquivos.
+- `event_YYYYMMDD_HHMMSS_microssegundos.mp4`: clipe original do evento.
+- `event_YYYYMMDD_HHMMSS_microssegundos_analise.mp4`: cópia com caixas, classes e áreas desenhadas.
+- `event_YYYYMMDD_HHMMSS_microssegundos.json`: tipo, confiança, área, horário e caminhos dos arquivos.
 
 ## Configuração YAML
 
@@ -136,6 +148,13 @@ capture:
       name: Entrada
       source: 0
       zone: [0.10, 0.10, 0.82, 0.82]
+      zones:
+        - id: produtos
+          name: Produtos
+          type: products
+          coordinates: [0.10, 0.10, 0.82, 0.82]
+      detection:
+        classes: [person, backpack, handbag, suitcase]
       enabled: true
 
 detector:

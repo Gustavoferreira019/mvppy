@@ -62,6 +62,27 @@ def draw_zone(image, zone):
     cv2.rectangle(image, (left, top), (right, bottom), (0, 122, 255), 3)
 
 
+def draw_zones(image, zones):
+    """Desenha áreas nomeadas sobre o quadro de análise."""
+    colors = {
+        "products": (255, 170, 0),
+        "checkout": (0, 200, 80),
+        "entrance": (255, 190, 0),
+        "exit": (0, 80, 255),
+        "interest": (0, 122, 255),
+    }
+    height, width = image.shape[:2]
+    for configured_zone in zones or []:
+        coordinates = configured_zone.get("coordinates", [0, 0, 1, 1])
+        x1, y1, x2, y2 = [float(value) for value in coordinates]
+        left, right = sorted((int(x1 * width), int(x2 * width)))
+        top, bottom = sorted((int(y1 * height), int(y2 * height)))
+        color = colors.get(str(configured_zone.get("type", "interest")), (0, 122, 255))
+        cv2.rectangle(image, (left, top), (right, bottom), color, 3)
+        label = str(configured_zone.get("name", "Área monitorada"))
+        cv2.putText(image, label, (left + 6, max(top - 8, 18)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
+
+
 def write_runtime_status(running):
     payload = {
         "running": running,
@@ -100,14 +121,29 @@ def camera_configs_from(current_config):
     return [camera for camera in configured if is_enabled(camera)]
 
 
+def camera_detection_classes(camera, fallback):
+    configured = camera.get("detection", {}) or {}
+    classes = configured.get("classes")
+    return list(classes) if isinstance(classes, list) and classes else list(fallback or [])
+
+
 def reload_runtime(new_config):
     global config, inference_interval, display_interval, display_size, camera_timeout
 
     new_detector_config = new_config.get("detector", {})
     detector.confidence = float(new_detector_config.get("confidence", detector.confidence))
-    detector.configure_classes(new_detector_config.get("classes"))
+    fallback_classes = new_detector_config.get("classes") or ["person"]
+    camera_list = camera_configs_from(new_config)
+    # O detector executa uma inferência única com a união das classes usadas
+    # pelas câmeras; cada EventEngine filtra o próprio perfil depois.
+    configured_union = []
+    for camera in camera_list:
+        for class_name in camera_detection_classes(camera, fallback_classes):
+            if class_name not in configured_union:
+                configured_union.append(class_name)
+    detector.configure_classes(configured_union)
 
-    desired = {camera["name"]: camera for camera in camera_configs_from(new_config)}
+    desired = {camera["name"]: camera for camera in camera_list}
     for name in list(captures):
         source_changed = name in desired and str(captures[name].source) != str(desired[name]["source"])
         if name not in desired or source_changed:
@@ -135,9 +171,18 @@ def reload_runtime(new_config):
                 before_seconds=recording_config["before_seconds"],
                 after_seconds=recording_config["after_seconds"],
             )
+        zone = camera.get("zone", events_config.get("restricted_zone", [0, 0, 1, 1]))
+        zones = camera.get("zones") or [{
+            "id": "main",
+            "name": camera.get("zone_name", "Área monitorada"),
+            "type": camera.get("zone_type", "interest"),
+            "coordinates": zone,
+        }]
         engines[name] = EventEngine(
-            camera.get("zone", events_config.get("restricted_zone", [0, 0, 1, 1])),
+            zone,
             events_config.get("cooldown_seconds", 10),
+            classes=camera_detection_classes(camera, fallback_classes),
+            zones=zones,
         )
 
     performance = new_config.get("performance", {})
@@ -182,7 +227,7 @@ try:
                     events = engines[name].process(last_people[name], frame.shape)
                     last_inference[name] = now
                 annotated = renderer.draw(frame, last_people[name])
-                draw_zone(annotated, engines[name].zone)
+                draw_zones(annotated, engines[name].zones)
                 cv2.putText(annotated, name, (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
                 latest[name] = annotated
                 if (not display_enabled or display_camera != name) and now - last_preview_write.get(name, 0.0) >= 0.2:
@@ -192,7 +237,7 @@ try:
                         [cv2.IMWRITE_JPEG_QUALITY, 82],
                     )
                     last_preview_write[name] = now
-                recorders[name].process(frame, events)
+                recorders[name].process(frame, events, annotated)
             if display_camera and name != display_camera:
                 continue
             if name in latest and now - last_seen.get(name, 0) <= camera_timeout:

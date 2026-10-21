@@ -11,6 +11,17 @@ SKELETON = [
 
 class Renderer:
 
+    COLORS = {
+        "person": (255, 80, 80),
+        "backpack": (255, 170, 0),
+        "handbag": (0, 170, 255),
+        "suitcase": (170, 80, 255),
+        "bottle": (0, 200, 120),
+        "cup": (80, 180, 255),
+        "laptop": (255, 120, 180),
+        "cell phone": (180, 120, 40),
+    }
+
     def draw(self, frame, detections):
         frame_copy = frame.copy()
 
@@ -24,9 +35,15 @@ class Renderer:
         track = detection.track_id if detection.track_id is not None else "?"
         label = f"{detection.label} #{track} {detection.conf:.2f}"
 
-        cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 2)
-        cv2.putText(image, label, (x1, max(y1 - 6, 12)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+        color = self.COLORS.get(detection.label.casefold(), (0, 255, 0))
+        cv2.rectangle(image, (x1, y1), (x2, y2), color, 2)
+        (text_width, text_height), baseline = cv2.getTextSize(
+            label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2
+        )
+        text_y = max(y1 - 6, text_height + baseline + 2)
+        cv2.rectangle(image, (x1, text_y - text_height - baseline - 4), (x1 + text_width + 6, text_y + 2), color, -1)
+        cv2.putText(image, label, (x1 + 3, text_y - 2),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
     def _draw_skeleton(self, image, keypoints):
         # keypoints tem shape (17, 2); ponto não detectado vem como (0, 0)

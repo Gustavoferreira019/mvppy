@@ -87,13 +87,25 @@ Quando o painel estiver consultando uma câmera que já está sendo usada pelo m
 - **Câmera/NVR sendo utilizada** com fundo preto: a fonte está aberta na janela principal;
 - **OFFLINE**: a fonte não respondeu; verifique a conexão e tente novamente.
 
-7. ZONA MONITORADA
+7. ZONA E DETECÇÕES MONITORADAS
 
-A zona é o retângulo laranja desenhado sobre a prévia. O evento é criado quando o centro de uma classe configurada entra nessa área. A versão Alpha reconhece classes genéricas como pessoa, carro, cachorro, gato, mochila, bolsa, mala, garrafa, copo, notebook e celular. Latas, marcas e mercadorias específicas exigem um modelo treinado para o ambiente do cliente.
+A área é desenhada sobre a prévia e recebe um nome e uma finalidade. O evento é criado quando o centro de uma classe selecionada entra nessa área. Use os blocos de detecção para escolher pessoas, mochilas, bolsas, malas e objetos comuns. Latas, marcas e mercadorias específicas exigem um modelo treinado para o ambiente do cliente.
 
-Inclua somente o local que deve ser observado. Evite calçadas, portas ou áreas de circulação normal quando elas não fizerem parte do objetivo. A zona é salva em coordenadas de 0 a 1 e continua válida mesmo se a resolução do vídeo mudar.
+Inclua somente o local que deve ser observado. Evite calçadas, portas ou áreas de circulação normal quando elas não fizerem parte do objetivo. Cada área é salva em coordenadas de 0 a 1 e continua válida mesmo se a resolução do vídeo mudar. Você pode adicionar mais de uma área, como Produtos, Caixa e Saída.
 
-Depois de salvar uma alteração, a zona também aparece na janela de monitoramento para facilitar a conferência.
+Depois de salvar uma alteração, as áreas também aparecem na janela de monitoramento para facilitar a conferência.
+
+7.1. DETECÇÕES E ÁREAS
+
+Na edição da câmera, o bloco **Detecções monitoradas** permite escolher o que deve ser observado:
+
+- **Pessoas:** pessoa;
+- **Volumes pessoais:** mochila, bolsa e mala;
+- **Objetos comuns:** garrafa, copo, notebook e celular.
+
+No bloco **Áreas monitoradas**, desenhe a área na prévia, dê um nome e escolha sua finalidade. Use nomes como `Produtos`, `Caixa`, `Entrada` e `Saída`. As cores e os nomes aparecem na janela de monitoramento e no vídeo analisado.
+
+As caixas coloridas identificam o que o modelo encontrou. A confiança é uma estimativa do modelo, não uma confirmação de furto. A versão Alpha registra uma atividade suspeita quando uma detecção selecionada entra em uma área configurada.
 
 8. EVENTOS E CLIPES
 
@@ -105,8 +117,9 @@ Os arquivos ficam em:
 
 Para cada evento podem ser gerados:
 
-- um vídeo `.mp4` com o trecho capturado;
-- um arquivo `.json` com horário, confiança, zona e informações do evento.
+- um vídeo `.mp4` original, sem sobreposição;
+- um vídeo `_analise.mp4` com caixas, classes e áreas desenhadas;
+- um arquivo `.json` com horário, confiança, área e informações do evento.
 
 Os arquivos são salvos no computador que executa o VIGIL.AI. Garanta espaço livre suficiente em disco. O programa precisa estar aberto para detectar movimentos e gerar novos eventos.
 
