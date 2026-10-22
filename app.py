@@ -2,6 +2,7 @@ import time
 import json
 import hashlib
 import sys
+import logging
 from pathlib import Path
 
 import cv2
@@ -13,6 +14,14 @@ from detector.detector import Detector
 from events import EventEngine
 from recording import EventRecorder
 from ui.renderer import Renderer
+
+
+LOGGER = logging.getLogger("vigilai.core")
+if not logging.getLogger().handlers:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+    )
 
 
 BASE_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
@@ -84,10 +93,20 @@ def draw_zones(image, zones):
 
 
 def write_runtime_status(running):
+    capture_errors = {}
+    for name, capture in captures.items():
+        error = getattr(capture, "last_error", None)
+        if error is not None:
+            capture_errors[name] = {
+                "code": getattr(error, "code", type(error).__name__),
+                "message": str(error),
+                "detail": getattr(error, "detail", ""),
+            }
     payload = {
         "running": running,
         "timestamp": time.time(),
         "cameras": list(captures),
+        "errors": capture_errors,
         "display_open": display_enabled,
         "display_camera": display_camera,
     }
@@ -115,10 +134,10 @@ def is_enabled(camera):
 
 def camera_configs_from(current_config):
     capture_config = current_config["capture"]
-    configured = capture_config.get("cameras")
-    if configured is None:
-        return [{"name": "Câmera 1", "source": capture_config["source"]}]
-    return [camera for camera in configured if is_enabled(camera)]
+    # O núcleo só pode iniciar fontes explicitamente cadastradas. O campo
+    # legado ``capture.source`` não cria uma câmera automaticamente.
+    configured = capture_config.get("cameras") or []
+    return [camera for camera in configured if isinstance(camera, dict) and is_enabled(camera)]
 
 
 def camera_detection_classes(camera, fallback):
@@ -222,13 +241,20 @@ try:
                 last_frame_ids[name] = frame_id
                 last_seen[name] = now
                 events = []
-                if now - last_inference[name] >= inference_interval:
-                    last_people[name] = detector.detect(frame)
-                    events = engines[name].process(last_people[name], frame.shape)
-                    last_inference[name] = now
-                annotated = renderer.draw(frame, last_people[name])
-                draw_zones(annotated, engines[name].zones)
-                cv2.putText(annotated, name, (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+                try:
+                    if now - last_inference[name] >= inference_interval:
+                        last_people[name] = detector.detect(frame)
+                        events = engines[name].process(last_people[name], frame.shape)
+                        last_inference[name] = now
+                    annotated = renderer.draw(frame, last_people[name])
+                    draw_zones(annotated, engines[name].zones)
+                    cv2.putText(annotated, name, (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+                except cv2.error:
+                    LOGGER.exception("OpenCV falhou ao processar a câmera %s", name)
+                    continue
+                except Exception:
+                    LOGGER.exception("Erro inesperado ao processar a câmera %s", name)
+                    continue
                 latest[name] = annotated
                 if (not display_enabled or display_camera != name) and now - last_preview_write.get(name, 0.0) >= 0.2:
                     cv2.imwrite(
@@ -237,35 +263,47 @@ try:
                         [cv2.IMWRITE_JPEG_QUALITY, 82],
                     )
                     last_preview_write[name] = now
-                recorders[name].process(frame, events, annotated)
+                try:
+                    recorders[name].process(frame, events, annotated)
+                except Exception:
+                    LOGGER.exception("Falha ao gravar evento da câmera %s", name)
             if display_camera and name != display_camera:
                 continue
             if name in latest and now - last_seen.get(name, 0) <= camera_timeout:
                 panels.append(cv2.resize(latest[name], display_size))
 
         if display_enabled and panels:
-            columns = 1 if len(panels) == 1 else 2 if len(panels) <= 4 else 3
-            rows = (len(panels) + columns - 1) // columns
-            blank = np.zeros_like(panels[0])
-            panels.extend([blank] * (rows * columns - len(panels)))
-            grid_rows = [cv2.hconcat(panels[row * columns:(row + 1) * columns]) for row in range(rows)]
-            cv2.imshow("VIGIL.AI", cv2.vconcat(grid_rows))
             try:
-                key = cv2.waitKey(1) & 0xFF
-            except cv2.error:
-                key = -1
-            if key == ord("q"):
-                display_enabled = False
+                columns = 1 if len(panels) == 1 else 2 if len(panels) <= 4 else 3
+                rows = (len(panels) + columns - 1) // columns
+                blank = np.zeros_like(panels[0])
+                panels.extend([blank] * (rows * columns - len(panels)))
+                grid_rows = [cv2.hconcat(panels[row * columns:(row + 1) * columns]) for row in range(rows)]
+                cv2.imshow("VIGIL.AI", cv2.vconcat(grid_rows))
                 try:
-                    cv2.destroyWindow("VIGIL.AI")
+                    key = cv2.waitKey(1) & 0xFF
                 except cv2.error:
-                    pass
-            else:
-                try:
-                    if cv2.getWindowProperty("VIGIL.AI", cv2.WND_PROP_VISIBLE) < 1:
-                        display_enabled = False
-                except cv2.error:
+                    LOGGER.exception("OpenCV falhou ao atualizar a janela de monitoramento")
+                    key = -1
+                if key == ord("q"):
                     display_enabled = False
+                    try:
+                        cv2.destroyWindow("VIGIL.AI")
+                    except cv2.error:
+                        LOGGER.exception("Falha ao fechar a janela de monitoramento")
+                else:
+                    try:
+                        if cv2.getWindowProperty("VIGIL.AI", cv2.WND_PROP_VISIBLE) < 1:
+                            display_enabled = False
+                    except cv2.error:
+                        LOGGER.exception("Falha ao consultar a janela de monitoramento")
+                        display_enabled = False
+            except cv2.error:
+                LOGGER.exception("OpenCV falhou ao exibir os quadros")
+                display_enabled = False
+            except Exception:
+                LOGGER.exception("Erro inesperado ao exibir os quadros")
+                display_enabled = False
         elif display_enabled:
             # Mantém a fila de eventos do HighGUI processada mesmo sem quadro.
             try:
@@ -279,4 +317,7 @@ finally:
         capture.release()
     for recorder in recorders.values():
         recorder.close()
-    cv2.destroyAllWindows()
+    try:
+        cv2.destroyAllWindows()
+    except cv2.error:
+        LOGGER.exception("Falha ao fechar as janelas do OpenCV")

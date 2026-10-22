@@ -1,4 +1,4 @@
-# VIGIL.AI — Alpha 0.2.0
+# VIGIL.AI — Alpha 0.2.1
 
 VIGIL.AI é um protótipo de vigilância inteligente para executar localmente, receber vídeo de câmeras, detectar pessoas e objetos configurados em áreas nomeadas e salvar clipes originais e analisados do evento. Esta documentação descreve o estado da versão Alpha para desenvolvedores e para quem precisa preparar uma instalação de teste.
 
@@ -13,6 +13,7 @@ VIGIL.AI é um protótipo de vigilância inteligente para executar localmente, r
 - Detecção configurável de pessoas e objetos comuns do modelo COCO com YOLOv8, gerando eventos quando uma detecção entra na zona.
 - Buffer anterior e gravação posterior ao evento, com vídeo MP4 e metadados JSON.
 - Recarga da configuração em runtime: alterações salvas no painel são percebidas pelo processo de monitoramento sem reiniciar o serviço.
+- Inicialização segura: o núcleo começa sem nenhuma câmera e só processa fontes presentes em `capture.cameras` e marcadas como ativas. O campo legado `capture.source` não inicia uma fonte sozinho.
 - Prévia no painel, estado offline e aviso quando a fonte está sendo utilizada pelo monitoramento.
 
 ## Configuração de detecção por câmera
@@ -41,16 +42,19 @@ O Alpha reconhece classes genéricas do modelo COCO, mas não conclui sozinho qu
 | `events/engine.py` | Filtro por perfil da câmera, áreas nomeadas e cooldown entre eventos. |
 | `recording/recorder.py` | Buffers circular, vídeo original, vídeo analisado e JSON do evento. |
 | `ui/renderer.py` | Renderização da grade, caixas coloridas, classes e confiança das detecções. |
-| `onvif_client.py` / `onvif_discovery.py` | Descoberta ONVIF e obtenção do perfil de vídeo. |
+| `integrations/` | Integrações com protocolos externos, como descoberta e perfil de vídeo ONVIF. |
 | `launcher.py` | Orquestração do pacote executável: inicia o núcleo, o configurador e abre o navegador. |
 | `config/config.yaml` | Configuração persistida das câmeras e parâmetros do sistema. |
+| `config/config.template.yaml` | Configuração inicial vazia usada para criar cada pacote de cliente. |
+| `docs/cliente/` | Manual do usuário e notas de versão distribuídos dentro do ZIP. |
+| `models/` | Pesos de modelos YOLO usados pelo monitoramento. |
 
 ## Requisitos de desenvolvimento
 
 - Windows 10/11 (o fluxo atual usa OpenCV e captura DirectShow/Media Foundation).
 - Python 3.10 ou superior; o ambiente usado para o Alpha é Python 3.13.
 - Uma câmera local, uma URL RTSP ou um dispositivo ONVIF para testar.
-- O arquivo `yolov8n.pt` na raiz, ou outro modelo compatível configurado em `detector.model_path`.
+- O arquivo `models/yolov8n.pt`, ou outro modelo compatível configurado em `detector.model_path`.
 - CPU funciona para testes. Uma GPU compatível com PyTorch melhora o desempenho quando há várias câmeras.
 
 ## Instalação para desenvolver
@@ -98,9 +102,11 @@ Pressione `Ctrl+C` no terminal do simulador para removê-lo da rede. O script é
 
 ## Executar o pacote Alpha
 
-O artefato da próxima entrega é `dist/VigilAI-alpha-0.2.0.zip`. Extraia o ZIP em uma pasta com permissão de escrita e execute `VigilAI-alpha-0.2.0.exe`. O launcher inicia o núcleo e o configurador, abre o navegador local e encerra o configurador quando o núcleo termina.
+O artefato da próxima entrega é `dist/VigilAI-alpha-0.2.1.zip`. Extraia o ZIP em uma pasta com permissão de escrita e execute `VigilAI-alpha-0.2.1.exe`. O launcher inicia o núcleo e o configurador, abre o navegador local e encerra o configurador quando o núcleo termina.
 
 A pasta extraída precisa permanecer inteira: o executável depende de `core/`, `configurator/`, `config/`, do modelo e dos arquivos de runtime. O YAML e os clipes ficam na pasta do pacote, para que a instalação seja portátil e possa ser copiada para outro computador.
+
+A instalação inicia sem câmeras. O cadastro salvo fica em `config/config.yaml` dentro da pasta da instalação. Ao fechar e abrir novamente o VIGIL.AI, o núcleo recarrega esse arquivo e restaura as mesmas fontes, zonas, detecções e tempos.
 
 ## Fluxo do painel
 
@@ -117,7 +123,7 @@ Ao mudar o tipo de fonte, a seleção anterior, a prévia, a zona e o estado do 
 
 ### Tipos de fonte
 
-**Webcam do notebook/USB** — selecione uma webcam detectada pelo computador. O valor exibido como `Webcam 0` corresponde ao índice usado pelo OpenCV. O mesmo índice fica reservado ao cadastro até a câmera ser excluída.
+**Webcam do notebook/USB** — clique em **Detectar webcams** para listar somente dispositivos que o OpenCV conseguiu abrir e ler. A página não acessa a câmera ao ser carregada. Cada entrada mostra o índice real usado pelo OpenCV; depois que uma fonte é cadastrada, ela fica reservada até a exclusão do cadastro. Se o teste falhar, confira o driver, as permissões do Windows e se outro programa está usando a webcam.
 
 **Câmera ONVIF (Wi-Fi ou rede)** — clique em **Buscar câmeras ONVIF** e selecione o dispositivo encontrado. O endereço é preenchido automaticamente e fica somente leitura; informe apenas usuário e senha. O VIGIL.AI obtém o URI de vídeo quando o equipamento fornece essa informação; o usuário não precisa montar o caminho RTSP.
 
@@ -158,7 +164,7 @@ capture:
       enabled: true
 
 detector:
-  model_path: yolov8n.pt
+  model_path: models/yolov8n.pt
   confidence: 0.5
   classes: [person, car, dog, cat, bird, backpack, handbag, suitcase, bottle, cup, laptop, cell phone]
 
@@ -189,14 +195,21 @@ Mensagens comuns:
 - **Porta 8765 ocupada:** encerre outro `setup_server.py` ou altere a porta no código antes de iniciar.
 - **Fonte já vinculada:** edite o cadastro existente ou exclua-o antes de reutilizar o dispositivo.
 - **Webcam indisponível / `Camera index out of range`:** outro programa está usando a webcam, o índice não existe ou o driver não entregou quadros.
-- **Modelo não encontrado:** confira `detector.model_path` e mantenha o `.pt` na raiz do pacote.
+- **Modelo não encontrado:** confira `detector.model_path` e mantenha o `.pt` na pasta `models` do pacote.
 - **RTSP/ONVIF offline:** valide IP, porta, credenciais, rede e se o equipamento permite RTSP/ONVIF.
 - **Desempenho baixo:** reduza `display_size` e `inference_fps`, use o stream secundário e evite abrir uma janela de vídeo por processo.
+
+
+### Diagnóstico de fontes
+
+O teste de uma fonte captura as falhas do OpenCV sem encerrar o configurador. A resposta informa um código técnico, como `WEBCAM_OPEN_FAILED`, `WEBCAM_FRAME_FAILED`, `SOURCE_OPEN_FAILED` ou `SNAPSHOT_FRAME_FAILED`, e o detalhe fica registrado no log. Em uma instalação empacotada, consulte `core.log` para o processamento e `configurator.log` para o painel; em desenvolvimento, consulte o terminal.
+
+Para webcams, o VIGIL.AI tenta DirectShow e depois o backend padrão do OpenCV. Se os dois falharem, verifique conexão, permissões do Windows e se outro programa está usando o dispositivo.
 
 ## Verificações antes de um commit
 
 ```powershell
-python -m py_compile app.py setup_server.py launcher.py capture\capture.py detector\detector.py events\engine.py recording\recorder.py ui\renderer.py onvif_client.py onvif_discovery.py
+python -m py_compile app.py setup_server.py launcher.py capture\source.py capture\capture.py detector\detector.py events\engine.py recording\recorder.py ui\renderer.py integrations\onvif_client.py integrations\onvif_discovery.py
 git status --short
 ```
 
@@ -207,14 +220,18 @@ Não inclua ambiente virtual, clipes, estados de execução, caches, builds ou c
 O build depende do PyInstaller e das dependências instaladas no ambiente virtual. Os arquivos `.spec`, `build/`, `dist/` e `.release-work/` são saídas locais e estão ignorados no Git. Gere uma build somente quando houver uma versão para entregar:
 
 ```powershell
-.\scripts\build-release.ps1 --name alpha-0.2.0
+.\scripts\build-release.ps1 --name alpha-0.2.1
 ```
 
-`--name` é obrigatório e recebe o identificador da versão. Por exemplo, `--name alpha-0.2.0` gera `dist/VigilAI-alpha-0.2.0.zip`, contendo o launcher `VigilAI-alpha-0.2.0.exe`. Se o parâmetro for omitido, o script encerra sem iniciar a build.
+`--name` é obrigatório e recebe o identificador da versão. Por exemplo, `--name alpha-0.2.1` gera `dist/VigilAI-alpha-0.2.1.zip`, contendo o launcher `VigilAI-alpha-0.2.1.exe`. Se o parâmetro for omitido, o script encerra sem iniciar a build.
+
+Cada build copia `config/config.template.yaml` para o pacote. Assim, o cliente sempre recebe uma instalação zerada, mesmo que o desenvolvedor tenha câmeras cadastradas no `config/config.yaml` local.
 
 O script mostra uma barra de progresso por etapas: geração do launcher, configurador, núcleo, cópia dos arquivos e compactação. O percentual é uma estimativa baseada nas fases informadas pelo PyInstaller; ele serve para acompanhar o andamento, enquanto o processo continua podendo demorar por causa do PyTorch, torchvision, OpenCV, YOLO e do modelo incluído.
 
-Valide o ZIP em uma máquina limpa antes de enviá-lo ao sócio ou a um cliente. O manual `LEIA-ME.txt` é incluído dentro do pacote com o nome da build atualizado.
+Valide o ZIP em uma máquina limpa antes de enviá-lo ao sócio ou a um cliente. O manual `docs/cliente/LEIA-ME.txt` e as notas da atualização `docs/cliente/NOTAS-DA-VERSAO.txt` são incluídos na raiz do pacote. A build atualiza a versão exibida nos dois documentos de acordo com o valor informado em `--name`.
+
+Antes de gerar uma nova entrega, atualize `docs/cliente/NOTAS-DA-VERSAO.txt` com as mudanças, correções e limitações daquela versão. Esse arquivo é voltado ao cliente; não inclua detalhes internos, senhas, URLs ou informações de desenvolvimento.
 
 ## Próximos passos fora do Alpha
 

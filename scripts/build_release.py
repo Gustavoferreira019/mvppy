@@ -10,6 +10,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+CUSTOMER_DOCS = ROOT / "docs" / "cliente"
 DIST = ROOT / "dist"
 WORK = ROOT / ".release-work"
 PYINSTALLER = Path(sys.executable).with_name("pyinstaller.exe")
@@ -120,7 +121,7 @@ def build(
 
 
 def copy_manual(package: Path, archive_name: str, launcher_name: str) -> None:
-    manual = (ROOT / "LEIA-ME.txt").read_text(encoding="utf-8")
+    manual = (CUSTOMER_DOCS / "LEIA-ME.txt").read_text(encoding="utf-8")
     version = re.search(r"alpha-\d+\.\d+\.\d+", archive_name, re.IGNORECASE)
     if version:
         manual = re.sub(
@@ -142,6 +143,20 @@ def copy_manual(package: Path, archive_name: str, launcher_name: str) -> None:
     (package / "LEIA-ME.txt").write_text(manual, encoding="utf-8")
 
 
+def copy_release_notes(package: Path, archive_name: str) -> None:
+    """Include customer-facing release notes with the exact build version."""
+    notes = (CUSTOMER_DOCS / "NOTAS-DA-VERSAO.txt").read_text(encoding="utf-8")
+    version = re.search(r"alpha-\d+\.\d+\.\d+", archive_name, re.IGNORECASE)
+    if version:
+        notes = re.sub(
+            r"Versão Alpha \d+\.\d+\.\d+",
+            f"Versão {version.group(0).replace('-', ' ').title()}",
+            notes,
+            count=1,
+        )
+    (package / "NOTAS-DA-VERSAO.txt").write_text(notes, encoding="utf-8")
+
+
 def create_archive(package: Path, archive: Path, start_percent: float = 85.0) -> None:
     files = [file for file in package.rglob("*") if file.is_file()]
     total = max(1, len(files))
@@ -161,9 +176,10 @@ def main() -> None:
             "Execute usando venv\\Scripts\\python.exe."
         )
     for required in (
-        ROOT / "yolov8n.pt",
-        ROOT / "config" / "config.yaml",
-        ROOT / "LEIA-ME.txt",
+        ROOT / "models" / "yolov8n.pt",
+        ROOT / "config" / "config.template.yaml",
+        CUSTOMER_DOCS / "LEIA-ME.txt",
+        CUSTOMER_DOCS / "NOTAS-DA-VERSAO.txt",
     ):
         if not required.exists():
             raise FileNotFoundError(required)
@@ -184,12 +200,17 @@ def main() -> None:
 
         (package / "configurator").mkdir(parents=True)
         (package / "core" / "config").mkdir(parents=True)
+        (package / "core" / "models").mkdir(parents=True)
         shutil.copy2(launcher, package / launcher.name)
         shutil.copy2(configurator, package / "configurator" / configurator.name)
         shutil.copy2(core, package / "core" / core.name)
-        shutil.copy2(ROOT / "config" / "config.yaml", package / "core" / "config" / "config.yaml")
-        shutil.copy2(ROOT / "yolov8n.pt", package / "core" / "yolov8n.pt")
+        # A build must always start clean. The developer's runtime
+        # config/config.yaml can contain real cameras and credentials, so it
+        # is never copied into a customer package.
+        shutil.copy2(ROOT / "config" / "config.template.yaml", package / "core" / "config" / "config.yaml")
+        shutil.copy2(ROOT / "models" / "yolov8n.pt", package / "core" / "models" / "yolov8n.pt")
         copy_manual(package, archive_name, launcher_name)
+        copy_release_notes(package, archive_name)
 
         for previous_archive in (
             archive,

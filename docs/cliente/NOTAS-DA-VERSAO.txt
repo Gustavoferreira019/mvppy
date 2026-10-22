@@ -1,0 +1,54 @@
+VIGIL.AI — NOTAS DA VERSÃO
+Versão Alpha 0.2.1
+
+SOBRE ESTA ATUALIZAÇÃO
+
+Esta é uma atualização de estabilidade e configuração da Alpha 0.2.0. Ela melhora o cadastro de fontes, a edição de áreas monitoradas e a clareza do painel.
+
+MELHORIAS NO CONFIGURADOR
+
+- A câmera não é aberta automaticamente ao iniciar o painel nem quando não existe cadastro salvo.
+- Webcams só são verificadas quando o usuário clica em **Detectar webcams** ou **Testar conexão**.
+- A lista de webcams mostra apenas dispositivos que conseguiram abrir e entregar imagem durante a detecção.
+- Uma fonte já vinculada a uma câmera não pode ser cadastrada novamente até que o cadastro original seja excluído.
+- A tela de edição mostra a fonte vinculada em modo somente leitura.
+- Mensagens e logs de erro ficaram mais claros para fontes indisponíveis, ocupadas ou sem imagem.
+
+ÁREAS MONITORADAS
+
+- É possível adicionar várias áreas, selecionar a desejada e excluir a área selecionada.
+- Uma nova área começa sem reutilizar o nome da área anterior.
+- Alterar o nome, o tipo ou os limites atualiza imediatamente a etiqueta da área e a prévia.
+- O painel explica o que são detecções monitoradas, áreas monitoradas e os tipos Interesse, Produtos, Caixa, Entrada e Saída.
+- A interface mantém pelo menos uma área por câmera, pois ela é necessária para o monitoramento.
+
+MONITORAMENTO E PRÉVIA
+
+- O monitoramento é aberto manualmente ao editar uma câmera cadastrada.
+- Fechar a janela de vídeo fecha apenas a visualização; o processamento continua enquanto o programa principal estiver aberto.
+- Quando uma fonte já está em uso pelo monitoramento, o painel evita abrir uma segunda conexão concorrente.
+
+PACOTE E DOCUMENTAÇÃO
+
+- O pacote continua sendo gerado sem câmeras e sem credenciais do computador que criou a build.
+- O ZIP inclui o manual `LEIA-ME.txt` e este arquivo `NOTAS-DA-VERSAO.txt`.
+- O arquivo de configuração inicial e o modelo de detecção foram organizados internamente para tornar a distribuição mais previsível.
+
+COMPORTAMENTO ATUAL DAS ÁREAS
+
+Um evento é criado quando o centro de uma classe selecionada entra em uma área daquela câmera. Os tipos de área organizam e identificam a região na prévia, mas ainda não possuem regras próprias. Por exemplo, Produtos + Saída ainda não gera, sozinho, uma conclusão de possível furto.
+
+LIMITAÇÕES CONHECIDAS DA VERSÃO ALPHA
+
+- O VIGIL.AI identifica objetos e registra eventos; ele não confirma automaticamente um furto.
+- Mercadorias específicas, marcas, latas e comportamentos como ocultar um item exigem modelos e regras adicionais.
+- Não há envio automático para Telegram, processamento em nuvem, usuários no painel ou atualização automática.
+- A análise funciona enquanto o programa principal está aberto.
+
+ANTES DE ATUALIZAR
+
+Faça uma cópia da pasta da instalação atual, incluindo `core\config` e os eventos que deseja guardar. Extraia a nova versão em outra pasta. Ao abrir, confira as câmeras cadastradas, suas fontes, classes monitoradas e áreas antes de iniciar o monitoramento.
+
+SUPORTE PARA TESTE
+
+Ao relatar um problema, informe a versão acima, o tipo e o modelo da câmera, a mensagem exibida e o horário aproximado. Se necessário, envie `core.log` ou `configurator.log`, removendo senhas e endereços de acesso.

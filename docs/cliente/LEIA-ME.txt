@@ -1,5 +1,5 @@
 VIGIL.AI — MANUAL DO USUÁRIO
-Versão Alpha 0.2.0
+Versão Alpha 0.2.1
 
 1. SOBRE O VIGIL.AI
 
@@ -9,12 +9,15 @@ Esta versão Alpha funciona localmente no computador. O processamento, os vídeo
 
 2. INSTALAÇÃO E ABERTURA
 
-1. Extraia `VigilAI-alpha-0.2.0.zip` para uma pasta do computador.
+1. Extraia `VigilAI-alpha-0.2.1.zip` para uma pasta do computador.
 2. Mantenha todos os arquivos e subpastas juntos.
-3. Clique duas vezes em `VigilAI-alpha-0.2.0.exe`.
+3. Clique duas vezes em `VigilAI-alpha-0.2.1.exe`.
 4. O navegador abrirá o painel em `http://127.0.0.1:8765`.
 
-O pacote já contém os componentes necessários. O cliente não precisa instalar Python. O programa principal precisa permanecer aberto para analisar as câmeras e gravar eventos. Fechar apenas a janela de vídeo não interrompe o monitoramento.
+O pacote já contém os componentes necessários.
+
+A instalação começa sem nenhuma câmera cadastrada. Depois que você salvar uma câmera, o cadastro fica guardado no computador. Ao fechar e abrir o VIGIL.AI novamente, as fontes, zonas e demais configurações salvas retornam automaticamente.
+ O cliente não precisa instalar Python. O programa principal precisa permanecer aberto para analisar as câmeras e gravar eventos. Fechar apenas a janela de vídeo não interrompe o monitoramento.
 
 Se o navegador não abrir, acesse o endereço acima manualmente. Se o programa fechar ou mostrar uma mensagem de erro, consulte os arquivos `launcher_error.log`, `core.log` e `configurator.log` na pasta do programa.
 
@@ -22,6 +25,8 @@ Se o navegador não abrir, acesse o endereço acima manualmente. Se o programa f
 
 1. No campo **Seção**, escolha **Adicionar câmera**.
 2. Escolha o tipo de fonte.
+
+A tela de cadastro não abre a webcam automaticamente. Clique em **Detectar webcams** para listar somente dispositivos reais que o OpenCV conseguiu abrir e ler. A câmera só é acessada durante essa detecção ou quando você clica em **Testar conexão**.
 3. Informe um nome fácil de reconhecer, como `Entrada`, `Caixa` ou `Estoque`.
 4. Preencha os campos obrigatórios exibidos para aquela fonte.
 5. Clique em **Testar conexão**.
@@ -38,7 +43,7 @@ A prévia, a zona e os campos de gravação só ficam disponíveis depois de uma
 
 WEBCAM DO NOTEBOOK/USB
 
-Selecione a webcam encontrada na lista. O índice exibido, como `Webcam 0`, representa o dispositivo conectado ao computador.
+Clique em **Detectar webcams** e selecione uma entrada encontrada. A lista mostra somente índices que foram abertos e entregaram um quadro; se não houver webcam, nenhuma entrada será criada. Depois, clique em **Testar conexão** para confirmar a fonte antes de salvar.
 
 Depois de cadastrada, a webcam fica vinculada àquela câmera e não pode ser usada em outro cadastro. Para reutilizá-la, exclua primeiro o cadastro original.
 
@@ -87,25 +92,51 @@ Quando o painel estiver consultando uma câmera que já está sendo usada pelo m
 - **Câmera/NVR sendo utilizada** com fundo preto: a fonte está aberta na janela principal;
 - **OFFLINE**: a fonte não respondeu; verifique a conexão e tente novamente.
 
-7. ZONA E DETECÇÕES MONITORADAS
+7. DETECÇÕES E ÁREAS MONITORADAS
 
-A área é desenhada sobre a prévia e recebe um nome e uma finalidade. O evento é criado quando o centro de uma classe selecionada entra nessa área. Use os blocos de detecção para escolher pessoas, mochilas, bolsas, malas e objetos comuns. Latas, marcas e mercadorias específicas exigem um modelo treinado para o ambiente do cliente.
+Cada câmera possui suas próprias detecções e áreas. A configuração de uma câmera não altera as outras. Uma área é um retângulo desenhado na prévia, salvo em coordenadas de 0 a 1; por isso ela continua na mesma posição mesmo que a resolução do vídeo mude.
 
-Inclua somente o local que deve ser observado. Evite calçadas, portas ou áreas de circulação normal quando elas não fizerem parte do objetivo. Cada área é salva em coordenadas de 0 a 1 e continua válida mesmo se a resolução do vídeo mudar. Você pode adicionar mais de uma área, como Produtos, Caixa e Saída.
+O VIGIL.AI cria um evento quando o centro de uma classe selecionada entra em qualquer área configurada para aquela câmera. Enquanto o mesmo objeto permanece na área, ele não gera eventos repetidos. Se sair e entrar novamente, o sistema respeita o intervalo de proteção configurado para os eventos.
 
-Depois de salvar uma alteração, as áreas também aparecem na janela de monitoramento para facilitar a conferência.
+Inclua somente os locais que devem ser observados. Evite calçadas, portas ou áreas de circulação normal quando elas não fizerem parte do objetivo. Se duas áreas se sobrepõem, o sistema registra a primeira área cadastrada que contém a detecção.
 
-7.1. DETECÇÕES E ÁREAS
+7.1. DETECÇÕES MONITORADAS
 
-Na edição da câmera, o bloco **Detecções monitoradas** permite escolher o que deve ser observado:
+No bloco **Detecções monitoradas**, marque somente o que aquela câmera deve observar:
 
 - **Pessoas:** pessoa;
 - **Volumes pessoais:** mochila, bolsa e mala;
 - **Objetos comuns:** garrafa, copo, notebook e celular.
 
-No bloco **Áreas monitoradas**, desenhe a área na prévia, dê um nome e escolha sua finalidade. Use nomes como `Produtos`, `Caixa`, `Entrada` e `Saída`. As cores e os nomes aparecem na janela de monitoramento e no vídeo analisado.
+Marcar uma classe não confirma um furto. A classe apenas passa a ser elegível para gerar um evento ao entrar em uma área monitorada. Latas, marcas, mercadorias específicas e ações como esconder um produto exigem modelos e regras adicionais, que não fazem parte desta versão Alpha.
 
-As caixas coloridas identificam o que o modelo encontrou. A confiança é uma estimativa do modelo, não uma confirmação de furto. A versão Alpha registra uma atividade suspeita quando uma detecção selecionada entra em uma área configurada.
+7.2. ÁREAS MONITORADAS
+
+No bloco **Áreas monitoradas**, informe um nome, escolha um tipo e desenhe ou ajuste os limites da área. Use nomes claros, como `Prateleira de bebidas`, `Caixa 1`, `Entrada principal` ou `Saída lateral`.
+
+Os tipos servem para organizar e identificar as áreas na prévia:
+
+- **Área de interesse:** região geral que deve ser observada;
+- **Produtos:** prateleira, expositor ou ponto de mercadorias;
+- **Caixa:** área de pagamento;
+- **Entrada:** ponto de acesso ao ambiente;
+- **Saída:** ponto de saída do ambiente.
+
+Nesta versão Alpha, todos os tipos usam a mesma regra de evento: uma classe marcada entrou na área. O tipo muda a identificação e a cor da área na prévia, mas ainda não aplica regras especiais, como relacionar Produtos + Saída a um possível furto.
+
+Para trabalhar com mais de uma área, clique em **Adicionar outra área**. Selecione a etiqueta da área para editar seus dados. Use **Excluir área selecionada** para removê-la. A câmera precisa manter pelo menos uma área monitorada. Depois de salvar, as áreas aparecem também na janela de monitoramento e no vídeo de análise.
+
+As caixas coloridas do vídeo identificam o que o modelo encontrou. A confiança é uma estimativa do modelo, não uma confirmação de furto.
+
+7.3. EXEMPLO: ENTRADA, PRODUTOS E SAÍDA
+
+Imagine três áreas separadas na mesma câmera: `Entrada` à esquerda, `Produtos` no centro e `Saída` à direita. Com **Pessoa** marcada em Detecções monitoradas, quando uma pessoa entra na área Entrada, o VIGIL.AI cria um evento e inicia um clipe com os segundos anteriores e posteriores configurados.
+
+Ao caminhar para Produtos ou Saída, a pessoa não gera automaticamente um novo evento. Para isso, ela precisa primeiro sair de todas as áreas e entrar novamente em outra área depois do intervalo de proteção dos eventos. Se as áreas encostarem ou se sobrepuserem, a pessoa é considerada continuamente dentro de uma área e a troca de uma área para outra não gera outro evento.
+
+Se outro evento ocorrer enquanto um clipe já estiver sendo gravado para aquela câmera, o clipe atual continua até o tempo posterior configurado. Ele não é estendido nem dividido automaticamente por cada área cruzada.
+
+Os tipos Entrada, Produtos e Saída identificam e colorem as regiões, mas nesta versão não formam uma sequência automática de possível furto. A regra “pessoa entrou, passou por produtos e saiu” será uma evolução futura; hoje, cada evento registra a entrada de uma classe selecionada em uma área.
 
 8. EVENTOS E CLIPES
 

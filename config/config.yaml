@@ -2,16 +2,34 @@ capture:
   source: null
   cameras: []
 detector:
-  model_path: yolov8n.pt
+  model_path: models/yolov8n.pt
   confidence: 0.5
-  classes: [person, car, dog, cat, bird, backpack, handbag, suitcase, bottle, cup, laptop, cell phone]
+  classes:
+  - person
+  - car
+  - dog
+  - cat
+  - bird
+  - backpack
+  - handbag
+  - suitcase
+  - bottle
+  - cup
+  - laptop
+  - cell phone
 performance:
   inference_fps: 5
   display_fps: 20
-  display_size: [640, 360]
+  display_size:
+  - 640
+  - 360
   camera_timeout_seconds: 5
 events:
-  restricted_zone: [0, 0, 1, 1]
+  restricted_zone:
+  - 0.1711
+  - 0.1892
+  - 0.8195
+  - 0.6975
   cooldown_seconds: 10
 recording:
   output_dir: events/clips

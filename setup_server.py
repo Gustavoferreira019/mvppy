@@ -7,7 +7,9 @@ from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import hashlib
 import json
+import logging
 from pathlib import Path
+import secrets
 import sys
 import time
 from urllib.parse import parse_qs, urlsplit
@@ -15,8 +17,9 @@ from urllib.parse import parse_qs, urlsplit
 import cv2
 import numpy as np
 import yaml
-from onvif_discovery import discover
-from onvif_client import get_streams
+from capture.source import SourceFailure, open_source, probe_source as safe_probe_source, safe_release
+from integrations.onvif_discovery import discover
+from integrations.onvif_client import get_streams
 
 if getattr(sys, "frozen", False):
     EXECUTABLE_DIR = Path(sys.executable).resolve().parent
@@ -30,11 +33,51 @@ CONFIG_PATH = ROOT / "config" / "config.yaml"
 RUNTIME_STATUS_PATH = ROOT / "runtime_status.json"
 DISPLAY_CONTROL_PATH = ROOT / "runtime_display.json"
 RUNTIME_PREVIEW_DIR = ROOT / "runtime_previews"
+PREVIEW_AUTHORIZATIONS = {}
+PREVIEW_AUTHORIZATION_TTL_SECONDS = 120
+
+LOGGER = logging.getLogger("vigilai.setup")
+if not logging.getLogger().handlers:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
 
 
 def load_config():
     with CONFIG_PATH.open("r", encoding="utf-8") as file:
         return yaml.safe_load(file) or {}
+
+
+def save_config(config):
+    """Persist configuration atomically so a close cannot leave partial YAML."""
+    temporary = CONFIG_PATH.with_name(f"{CONFIG_PATH.name}.tmp")
+    temporary.write_text(
+        yaml.safe_dump(config, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+    temporary.replace(CONFIG_PATH)
+
+
+def issue_preview_authorization(source):
+    """Authorize a temporary preview only after its source passed a test."""
+    token = secrets.token_urlsafe(24)
+    now = time.monotonic()
+    PREVIEW_AUTHORIZATIONS[token] = (str(source), now + PREVIEW_AUTHORIZATION_TTL_SECONDS)
+    expired = [key for key, (_source, expires_at) in PREVIEW_AUTHORIZATIONS.items() if expires_at <= now]
+    for key in expired:
+        PREVIEW_AUTHORIZATIONS.pop(key, None)
+    return token
+
+
+def preview_is_authorized(source, token):
+    if not token:
+        return False
+    authorization = PREVIEW_AUTHORIZATIONS.get(token)
+    if not authorization:
+        return False
+    authorized_source, expires_at = authorization
+    if expires_at <= time.monotonic():
+        PREVIEW_AUTHORIZATIONS.pop(token, None)
+        return False
+    return authorized_source == str(source)
 
 
 def runtime_status():
@@ -52,42 +95,55 @@ def runtime_preview_path(camera_name):
 
 
 def probe_source(source):
-    value = int(source) if source.strip().isdigit() else source.strip()
-    cap = cv2.VideoCapture(value, cv2.CAP_DSHOW) if isinstance(value, int) else cv2.VideoCapture(value, cv2.CAP_FFMPEG)
-    opened = cap.isOpened()
-    frame = None
-    if opened:
-        opened, frame = cap.read()
-    if opened and frame is not None:
-        height, width = frame.shape[:2]
-        size = (int(width), int(height))
-    else:
-        size = (0, 0)
-        opened = False
-    cap.release()
-    return opened, *size
+    opened, width, height, _failure = safe_probe_source(source)
+    return opened, width, height
 
 
 def webcam_options():
+    # A lista real e preenchida por /webcams somente quando o usuario pede a
+    # deteccao. Nunca apresente indices presumidos ao carregar o painel.
+    return ""
+
+
+def detect_webcams():
+    """Return only webcam indices that OpenCV can actually open and read."""
     config = load_config()
     configured = config.get("capture", {}).get("cameras", []) or []
-    busy = {str(camera.get("source")): str(camera.get("name", "Câmera")) for camera in configured}
-    options = []
-    for index in range(5):
-        if str(index) in busy:
-            options.append(f"<option value='{index}' disabled>Webcam {index} (Vinculada a {escape(busy[str(index)])})</option>")
+    linked = {str(camera.get("source")) for camera in configured}
+    devices = []
+    misses = 0
+    found_one = False
+    # OpenCV does not expose a portable, non-opening enumeration API. Probe a
+    # bounded set only on the explicit detection action, never while rendering
+    # the page. A linked source remains unavailable for a new record.
+    for index in range(10):
+        if str(index) in linked:
             continue
-        opened, width, height = probe_source(str(index))
-        if not opened:
-            if index == 0:
-                return "<option value=''>Nenhuma webcam detectada</option>"
+        opened, width, height, _failure = safe_probe_source(str(index))
+        if opened:
+            devices.append({"index": index, "label": f"Webcam {index} ({width}x{height})"})
+            found_one = True
+            misses = 0
+        else:
+            misses += 1
+        if found_one and misses >= 2:
             break
-        options.append(f"<option value='{index}'>Webcam {index} ({width}x{height})</option>")
-    return "".join(options) or "<option value=''>Nenhuma webcam detectada</option>"
+    return devices
 
 
 class SetupHandler(BaseHTTPRequestHandler):
     def do_GET(self):
+        if urlsplit(self.path).path == "/webcams":
+            try:
+                devices = detect_webcams()
+                return self._json(devices)
+            except Exception:
+                LOGGER.exception("Falha ao detectar webcams")
+                return self._respond(
+                    "[WEBCAM_DISCOVERY_ERROR] Nao foi possivel detectar webcams. Consulte o log do configurador.",
+                    500,
+                    "text/plain; charset=utf-8",
+                )
         if urlsplit(self.path).path == "/onvif/streams":
             query = parse_qs(urlsplit(self.path).query)
             try:
@@ -117,9 +173,14 @@ class SetupHandler(BaseHTTPRequestHandler):
                 detail = errors[-1] if errors else "nenhum perfil de vídeo foi informado"
                 raise RuntimeError(detail)
             except Exception as error:
-                return self._respond(f"Falha ONVIF: {error}", 502, "text/plain; charset=utf-8")
+                LOGGER.exception("Falha ao obter stream ONVIF")
+                return self._respond(f"[ONVIF_STREAM_ERROR] Falha ONVIF: {error}", 502, "text/plain; charset=utf-8")
         if urlsplit(self.path).path == "/discover":
-            devices = discover()
+            try:
+                devices = discover()
+            except Exception:
+                LOGGER.exception("Falha na descoberta ONVIF")
+                return self._respond("[ONVIF_DISCOVERY_ERROR] Não foi possível buscar câmeras ONVIF. Consulte o log do configurador.", 502, "text/plain; charset=utf-8")
             data = json.dumps(devices, ensure_ascii=False).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -132,8 +193,13 @@ class SetupHandler(BaseHTTPRequestHandler):
             source = query.get("source", [""])[0]
             source_type = query.get("type", [""])[0]
             camera_name = query.get("name", [""])[0].strip()
+            try:
+                current_config = load_config()
+            except Exception:
+                LOGGER.exception("Falha ao carregar a configuração durante o teste da fonte")
+                return self._respond("[CONFIG_LOAD_ERROR] Não foi possível carregar config/config.yaml. Consulte o log do configurador.", 500, "text/plain; charset=utf-8")
             linked_sources = {str(camera.get("source")): str(camera.get("name", "Câmera"))
-                              for camera in load_config().get("capture", {}).get("cameras", [])}
+                              for camera in current_config.get("capture", {}).get("cameras", [])}
             if not camera_name:
                 return self._respond("Informe o nome da câmera antes de testar.", 400, "text/plain; charset=utf-8")
             if source_type == "webcam" and not source.isdigit():
@@ -146,7 +212,7 @@ class SetupHandler(BaseHTTPRequestHandler):
                 return self._respond(f"Esta fonte já está vinculada à câmera {escape(linked_sources[source])}. Edite esse cadastro para alterar a fonte.", 409, "text/plain; charset=utf-8")
             if not source:
                 return self._respond("Preencha os campos obrigatórios antes de testar.", 400, "text/plain; charset=utf-8")
-            opened, width, height = probe_source(source)
+            opened, width, height, failure = safe_probe_source(source)
             is_network = source.lower().startswith(("rtsp://", "rtsps://", "http://", "https://"))
             if opened:
                 message = f"Conexão funcionando: {width}x{height}."
@@ -154,7 +220,11 @@ class SetupHandler(BaseHTTPRequestHandler):
                 message = "Falha na conexão com a câmera IP/NVR. Verifique o IP, a porta, usuário, senha e o caminho RTSP."
             else:
                 message = "Não foi possível abrir a fonte de vídeo."
-            return self._respond(message, 200 if opened else 502, "text/plain; charset=utf-8")
+            if failure is not None:
+                LOGGER.warning("Teste rejeitado para %r: %s (%s)", source, failure.public_message(), failure.detail)
+                message = f"{message} {failure.public_message()} Consulte o log do processo para detalhes."
+            headers = {"X-Vigil-Preview-Token": issue_preview_authorization(source)} if opened else None
+            return self._respond(message, 200 if opened else 502, "text/plain; charset=utf-8", headers)
         if urlsplit(self.path).path == "/stream":
             return self._stream(urlsplit(self.path).query)
         if urlsplit(self.path).path == "/snapshot":
@@ -162,15 +232,25 @@ class SetupHandler(BaseHTTPRequestHandler):
             source = query.get("source", [""])[0]
             if not source:
                 return self._respond("Fonte não informada.", 400, "text/plain; charset=utf-8")
-            value = int(source) if source.isdigit() else source
-            cap = cv2.VideoCapture(value, cv2.CAP_DSHOW) if isinstance(value, int) else cv2.VideoCapture(value, cv2.CAP_FFMPEG)
-            opened, frame = cap.isOpened(), None
-            if opened:
-                opened, frame = cap.read()
-            cap.release()
+            cap = None
+            frame = None
+            error_message = "[SNAPSHOT_FRAME_FAILED] Nao foi possivel capturar um quadro da fonte."
+            try:
+                cap, frame, _backend = open_source(source)
+                opened = True
+            except SourceFailure as error:
+                LOGGER.warning("Snapshot rejeitado para %r: %s (%s)", source, error.public_message(), error.detail)
+                opened = False
+                error_message = f"{error.public_message()} Consulte o log do processo para detalhes."
+            except Exception:
+                LOGGER.exception("Erro inesperado ao obter snapshot da fonte %r", source)
+                opened = False
+                error_message = "[SNAPSHOT_ERROR] O snapshot falhou. Consulte o log do processo para detalhes."
+            finally:
+                safe_release(cap, source, "snapshot")
             if not opened or frame is None:
                 return self._respond(
-                    "Não foi possível capturar um quadro da fonte. Verifique se a câmera está conectada e se não está sendo usada por outro programa.",
+                    error_message,
                     502,
                     "text/plain; charset=utf-8",
                 )
@@ -192,7 +272,8 @@ class SetupHandler(BaseHTTPRequestHandler):
         config = load_config()
         zone = config.get("events", {}).get("restricted_zone", [0, 0, 1, 1])
         recording = config.get("recording", {})
-        source = str(config.get("capture", {}).get("source", ""))
+        legacy_source = config.get("capture", {}).get("source")
+        source = "" if legacy_source is None else str(legacy_source)
         cameras = config.get("capture", {}).get("cameras", [])
         default_detection_classes = ["person", "backpack", "handbag", "suitcase"]
         detection_catalog = [
@@ -209,12 +290,12 @@ class SetupHandler(BaseHTTPRequestHandler):
         for group, class_name, label in detection_catalog:
             detection_groups.setdefault(group, []).append((class_name, label))
         detection_options = "".join(
-            f"<fieldset class='detection-group'><legend>{escape(group)}</legend>"
+            f"<section class='detection-group' style='display:block;padding:14px;border:1px solid #dbe4f0;border-radius:11px;background:#fff'><h4 style='margin:0 0 10px;font-size:13px;color:#475467'>{escape(group)}</h4><div class='detection-options' style='display:grid;gap:7px'>"
             + "".join(
-                f"<label class='detection-option'><input type='checkbox' name='detect_class' value='{escape(class_name)}'{' checked' if class_name in default_detection_classes else ''}><span>{escape(label)}</span></label>"
+                f"<label class='detection-option' style='display:flex;align-items:center;justify-content:flex-start;gap:9px;width:100%;margin:0;padding:9px 10px;border-radius:8px;background:#f8fafc;font-weight:600;cursor:pointer'><input style='width:16px;height:16px;min-width:16px;margin:0;padding:0;accent-color:#4169e1;flex:0 0 16px' type='checkbox' name='detect_class' value='{escape(class_name)}'{' checked' if class_name in default_detection_classes else ''}><span>{escape(label)}</span></label>"
                 for class_name, label in options
             )
-            + "</fieldset>"
+            + "</div></section>"
             for group, options in detection_groups.items()
         )
         default_detection_data = json.dumps(default_detection_classes, ensure_ascii=False)
@@ -239,24 +320,22 @@ class SetupHandler(BaseHTTPRequestHandler):
 <style>*{{box-sizing:border-box}}body{{margin:0;min-height:100vh;font:15px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#172033;background:linear-gradient(135deg,#eef4ff,#f8fafc)}}main{{max-width:860px;margin:38px auto;padding:34px;background:#fff;border:1px solid #e4e9f2;border-radius:18px;box-shadow:0 18px 45px rgba(37,55,88,.12)}}h1{{margin:5px 0 4px;font-size:30px}}.eyebrow{{margin:0;color:#4169e1;text-transform:uppercase;letter-spacing:.12em;font-size:12px;font-weight:800}}.intro{{margin:0 0 26px;color:#667085}}form{{display:grid;gap:13px}}label{{display:block;margin-top:4px;font-weight:700;color:#344054}}input,select{{width:100%;padding:11px 12px;margin-top:5px;border:1px solid #d0d5dd;border-radius:9px;background:#fff;color:#172033;font:inherit}}input:focus,select:focus{{outline:3px solid #dbe5ff;border-color:#4169e1}}.actions{{display:flex;gap:10px;flex-wrap:wrap;margin-top:5px}}button{{padding:11px 16px;border:0;border-radius:9px;background:#4169e1;color:white;font:600 14px inherit;cursor:pointer}}button:hover{{background:#3154bd;transform:translateY(-1px)}}button.secondary{{background:#e9efff;color:#3154bd}}.status{{display:none;margin-top:8px;padding:9px 11px;border-radius:8px;font-size:13px;font-weight:600}}.status.success{{display:block;color:#16794b;background:#e8f7ef;border:1px solid #a8e0c2}}.status.error{{display:block;color:#b42318;background:#fef0ef;border:1px solid #f5b8b3}}hr{{border:0;border-top:1px solid #e7ebf2;margin:30px 0 24px}}h2{{margin:0 0 12px;font-size:20px}}.preview-shell{{position:relative;margin-top:14px;min-height:80px;border-radius:12px;overflow:hidden;background:#f1f4f8}}.preview-shell img{{display:none;max-width:100%;width:640px}}.preview-shell canvas{{display:none;position:absolute;left:0;top:0;cursor:crosshair}}.hint{{color:#667085;font-size:13px;margin:6px 0 0}}@media(max-width:650px){{main{{margin:0;border-radius:0;padding:22px}}h1{{font-size:25px}}}}</style>
 <main><p class='eyebrow'>VIGIL.AI · VIGILÂNCIA INTELIGENTE</p><h1>Monitoramento</h1><p class='intro'>Acompanhe suas câmeras e gerencie as fontes do sistema.</p><label>Seção</label><select id='sectionSelect' onchange='switchSection()'><option value='overview'>Monitoramento</option><option value='register'>Cadastrar câmera</option><option value='discover'>Encontrar câmeras ONVIF</option><option value='registered'>Câmeras cadastradas</option></select><div id='overviewSection'><h2>Visão geral</h2><p class='hint'>{len(cameras)} câmera(s) cadastrada(s). O processamento é iniciado pelo programa principal.</p><div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px'>{overview_cards or '<div class="hint">Nenhuma câmera cadastrada ainda. Use o menu acima para começar.</div>'}</div></div><form id='cameraForm' method='post' onsubmit='return validateSave()'><h2 id='formTitle'>Cadastrar câmera</h2>
 <label>Tipo de fonte</label><select id='sourceType' onchange='updateSourceMode()'><option value='webcam'>Webcam do notebook/USB</option><option value='onvif'>Câmera ONVIF (Wi-Fi ou rede)</option><option value='ip'>Câmera de rede (RTSP manual)</option></select>
-<div id='webcamControls'><label>Webcams encontradas *</label><select id='webcamDevices' name='webcam_source' onchange="document.getElementById('source').value=this.value"><option value=''>Selecione</option>{webcam_options()}</select></div>
+<section id='webcamControls' class='source-panel'><div class='field-heading'><label>Webcam *</label><button id='detectWebcamsButton' class='secondary compact-button' type='button' onclick='detectWebcams()'>Detectar webcams</button></div><select id='webcamDevices' name='webcam_source' onchange="document.getElementById('source').value=this.value"><option value=''>Selecione uma webcam</option>{webcam_options()}</select><p class='hint'>A câmera só é acessada ao detectar dispositivos ou testar a conexão.</p></section>
  <div id='ipControls' style='display:none'><div id='onvifDiscovery'><button class='secondary' type='button' onclick='discoverCameras()'>Buscar câmeras ONVIF</button><select id='onvifDevices' style='display:none;margin-top:10px' onchange='selectDiscoveredCamera()'></select></div><label>Usuário *</label><input id='rtspUser' placeholder='usuário da câmera'><label>Senha *</label><input id='rtspPassword' type='password' placeholder='senha da câmera'><label>Endereço IP ou host *</label><input id='rtspHost' placeholder='192.168.1.50' readonly><div id='manualRtsp'><label>Fabricante</label><select id='vendor' onchange='buildPresetPath()'><option value='intelbras'>Intelbras / Dahua</option><option value='hikvision'>Hikvision</option><option value='custom'>Outro (caminho personalizado)</option></select><label>Canal</label><input id='channel' type='number' min='1' value='1' onchange='buildPresetPath()'><label>Stream</label><select id='stream' onchange='buildPresetPath()'><option value='main'>Principal</option><option value='sub'>Secundário</option></select><label>Protocolo *</label><select id='protocol'><option value='rtsp'>RTSP</option><option value='rtsps'>RTSPS</option></select><label>Porta *</label><input id='rtspPort' value='554' placeholder='554'><label>Caminho RTSP *</label><input id='rtspPath' placeholder='/caminho/da/camera' readonly></div></div>
 <div id='sourceInput' style='display:none'><input id='source' name='source' value='{escape(source)}' type='hidden'></div><p id='status' class='status'></p>
 <input id='cameraId' name='camera_id' type='hidden'><label>Nome da câmera *</label><input name='camera_name' placeholder='Ex.: Entrada, Caixa ou Estoque'>
 <p id='nameStatus' class='status'></p><button class='secondary' type='button' onclick='testConnection()'>Testar conexão</button>
-<section id='analysisSettings' class='analysis-settings'>
-<h3>Detecções monitoradas</h3><p class='hint'>Escolha o que esta câmera deve observar.</p>
+<section id='analysisSettings' class='analysis-settings' style='display:none;gap:14px;padding:20px;border:1px solid #dfe6f2;border-radius:14px;background:#fbfcff'>
+<h3>Detecções monitoradas</h3><p class='hint'>Marque apenas as classes que importam para esta câmera. O VIGIL.AI registra um evento quando uma classe selecionada entra em uma área monitorada.</p><div class='info-callout' style='padding:11px 12px;border:1px solid #c9d7fb;border-radius:9px;background:#f2f6ff;color:#344054;font-size:13px;line-height:1.45'><strong>Como escolher:</strong> pessoa, mochila, bolsa e mala são úteis para cenários de acesso e prevenção de furtos. Objetos comuns devem ser ativados somente se forem relevantes para esse ponto, reduzindo alertas desnecessários.</div>
 <div class='detection-grid'>{detection_options}</div><input id='detectionClasses' name='detection_classes' type='hidden'>
-<h3>Áreas monitoradas</h3><p class='hint'>Desenhe uma área na prévia e informe sua finalidade.</p>
+<h3>Áreas monitoradas</h3><p class='hint'>Desenhe os locais em que uma detecção deve gerar evento. Cada área salva seu nome, seus limites e o tipo escolhido.</p><div class='info-callout' style='padding:11px 12px;border:1px solid #c9d7fb;border-radius:9px;background:#f2f6ff;color:#344054;font-size:13px;line-height:1.45'><strong>Tipos de área:</strong> <b>Interesse</b> para uma região geral; <b>Produtos</b> para prateleiras ou expositores; <b>Caixa</b> para pagamento; <b>Entrada</b> e <b>Saída</b> para acessos. No Alpha, o tipo identifica a área na prévia e no evento; todas as áreas monitoram as classes selecionadas.</div>
 <label>Nome da área</label><input id='zoneName' name='zone_name' value='Área monitorada' placeholder='Ex.: Área de produtos'>
 <label>Tipo da área</label><select id='zoneType' name='zone_type'><option value='interest'>Área de interesse</option><option value='products'>Produtos</option><option value='checkout'>Caixa</option><option value='entrance'>Entrada</option><option value='exit'>Saída</option></select>
-<div id='zoneList' class='zone-list'></div><button id='addZoneButton' class='secondary' type='button' onclick='addZone()'>Adicionar outra área</button>
+<div id='zoneList' class='zone-list' aria-label='Áreas configuradas' style='display:flex;flex-wrap:wrap;gap:8px;margin:2px 0 4px'></div><p class='hint' style='margin:0'>Selecione uma área acima para editar seus dados ou excluí-la.</p><div class='zone-actions' style='display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px'><button id='addZoneButton' class='secondary' style='margin:0' type='button' onclick='addZone()'>Adicionar outra área</button><button id='removeZoneButton' class='danger-outline' style='margin:0;background:#fff;color:#b42318;border:1px solid #f5b8b3' type='button' onclick='removeSelectedZone()'>Excluir área selecionada</button></div>
 <input id='zonesJson' name='zones_json' type='hidden'>
 </section>
-<label>Zona (coordenadas de 0 a 1)</label><input name='x1' value='{zone[0]}' placeholder='Esquerda'><input name='y1' value='{zone[1]}' placeholder='Topo'><input name='x2' value='{zone[2]}' placeholder='Direita'><input name='y2' value='{zone[3]}' placeholder='Baixo'>
-<div id='recordingSettings'><label>Segundos antes</label><input name='before' type='number' step='1' min='0' value='{int(float(recording.get("before_seconds", 10)))}'>
-<label>Segundos depois</label><input name='after' type='number' step='1' min='0' value='{int(float(recording.get("after_seconds", 5)))}'>
-</div>
+<section id='coordinatesPanel' class='form-panel' style='display:none;gap:14px;padding:20px;border:1px solid #dfe6f2;border-radius:14px;background:#fbfcff'><div class='panel-heading' style='display:flex;align-items:flex-start;justify-content:space-between;gap:16px'><div><h3 style='margin:0;color:#172b4d;font-size:17px'>Zona monitorada</h3><p class='hint'>Use a prévia para desenhar a área ou ajuste os limites abaixo.</p></div><span class='coordinate-scale' style='padding:4px 8px;border-radius:999px;background:#e9efff;color:#3154bd;font-size:12px;font-weight:700'>0 a 1</span></div><div class='coordinate-grid' style='display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px'><label style='display:block;margin:0;font-size:13px'>Esquerda<input name='x1' type='number' step='0.0001' min='0' max='1' value='{zone[0]}'></label><label style='display:block;margin:0;font-size:13px'>Topo<input name='y1' type='number' step='0.0001' min='0' max='1' value='{zone[1]}'></label><label style='display:block;margin:0;font-size:13px'>Direita<input name='x2' type='number' step='0.0001' min='0' max='1' value='{zone[2]}'></label><label style='display:block;margin:0;font-size:13px'>Base<input name='y2' type='number' step='0.0001' min='0' max='1' value='{zone[3]}'></label></div></section>
+<section id='recordingSettings' class='form-panel' style='display:none;gap:14px;padding:20px;border:1px solid #dfe6f2;border-radius:14px;background:#fbfcff'><div class='panel-heading'><div><h3 style='margin:0;color:#172b4d;font-size:17px'>Gravação do evento</h3><p class='hint'>Defina quanto vídeo será preservado antes e depois de uma detecção.</p></div></div><div class='recording-grid' style='display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px'><label style='display:block;margin:0;font-size:13px'>Segundos antes<input name='before' type='number' step='1' min='0' value='{int(float(recording.get("before_seconds", 10)))}'></label><label style='display:block;margin:0;font-size:13px'>Segundos depois<input name='after' type='number' step='1' min='0' value='{int(float(recording.get("after_seconds", 5)))}'></label></div></section>
 <div class='actions'><button id='openCurrent' class='secondary' type='button' style='display:none' onclick='openCurrentCamera()'>Abrir monitoramento</button><button id='saveButton' class='primary' name='action' value='save'>Salvar configuração</button><button id='deleteCurrent' class='delete-current' type='button' style='display:none' onclick='deleteCurrentCamera()'>Excluir câmera</button></div></form><div id='registeredList'><hr><h2>Câmeras cadastradas <span class='section-count'>{len(cameras)}</span></h2><div class='camera-list'>{camera_rows or '<p class="hint">Nenhuma câmera cadastrada.</p>'}</div></div></main></html>"""
         page = page.replace("Vigilai", "VIGIL.AI")
         page = page.replace("font:15px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif", "font:15px/1.5 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif")
@@ -285,7 +364,7 @@ class SetupHandler(BaseHTTPRequestHandler):
         page = page.replace("</style>", ".preview-shell{display:inline-block;width:fit-content;max-width:100%;vertical-align:top}.preview-shell img{display:block}</style>")
         page = page.replace("</style>", "#registeredList>h2{display:flex;align-items:center;justify-content:space-between}#registeredList>h2 .section-count{margin-left:auto}.section-header{display:flex;align-items:center;justify-content:space-between;gap:16px}.section-header h2{margin:0}.section-header .section-count{margin-left:auto}.camera-status:before{display:none}</style>")
         page = page.replace("</main>", """
-<div id='previewSection'><hr><h2>Prévia e zona monitorada</h2><button id='retryButton' class='secondary' style='display:none' type='button' onclick='loadPreview()'>Tentar novamente</button>
+<div id='previewSection' style='display:none'><hr><h2>Prévia e zona monitorada</h2><button id='retryButton' class='secondary' style='display:none' type='button' onclick='loadPreview()'>Tentar novamente</button>
 <div class='preview-shell'><img id='preview' alt=''><canvas id='zone'></canvas><div id='previewOverlay' style='display:none;position:absolute;inset:0;align-items:center;justify-content:center;color:#f2f4f7;font-size:24px;font-weight:700;background:#000'>OFFLINE</div></div>
 <script>
 const source=document.getElementById('source'), sourceType=document.getElementById('sourceType'), webcamControls=document.getElementById('webcamControls'), ipControls=document.getElementById('ipControls'), onvifDiscovery=document.getElementById('onvifDiscovery'), manualRtsp=document.getElementById('manualRtsp'), sourceInput=document.getElementById('sourceInput'), sourceLabel=document.getElementById('sourceLabel'), img=document.getElementById('preview'), canvas=document.getElementById('zone'), retryButton=document.getElementById('retryButton'), ctx=canvas.getContext('2d'), status=document.getElementById('status'), nameStatus=document.getElementById('nameStatus');
@@ -293,13 +372,17 @@ const registeredCameras={camera_data};
 const defaultDetectionClasses={default_detection_data};
 let configuredZones=[];
 let selectedZoneIndex=0;
+let selectedZoneId='';
 function setDetectionClasses(classes){{ const selected=new Set((classes||[]).map(value=>String(value).toLowerCase())); document.querySelectorAll('[name=detect_class]').forEach(input=>input.checked=selected.has(input.value.toLowerCase())); syncDetection(); }}
 function syncDetection(){{ const classes=Array.from(document.querySelectorAll('[name=detect_class]:checked')).map(input=>input.value); document.getElementById('detectionClasses').value=JSON.stringify(classes); }}
-function renderZoneList(){{ const list=document.getElementById('zoneList'); list.innerHTML=configuredZones.map((zone,index)=>'<button type="button" class="zone-chip '+(index===selectedZoneIndex?'selected':'')+'" onclick="selectZone('+index+')">'+zone.name+'</button>').join(''); }}
-function selectZone(index){{ syncZones(); selectedZoneIndex=index; const zone=configuredZones[index]; document.getElementById('zoneName').value=zone.name; document.getElementById('zoneType').value=zone.type; ['x1','y1','x2','y2'].forEach((key,i)=>document.querySelector('[name='+key+']').value=zone.coordinates[i]); renderZoneList(); drawZone(); }}
-function setZones(zones){{ configuredZones=(zones&&zones.length?zones:[{{id:'main',name:'Área monitorada',type:'interest',coordinates:[0,0,1,1]}}]).map((zone,index)=>({{id:zone.id||('zone_'+index),name:zone.name||'Área monitorada',type:zone.type||'interest',coordinates:zone.coordinates||[0,0,1,1]}})); selectedZoneIndex=0; selectZone(0); }}
-function syncZones(){{ const current=configuredZones[selectedZoneIndex]||{{id:'main',name:'Área monitorada',type:'interest',coordinates:[0,0,1,1]}}; current.name=document.getElementById('zoneName').value||'Área monitorada'; current.type=document.getElementById('zoneType').value||'interest'; current.coordinates=['x1','y1','x2','y2'].map(key=>Number(document.querySelector('[name='+key+']').value)||0); configuredZones[selectedZoneIndex]=current; document.getElementById('zonesJson').value=JSON.stringify(configuredZones); renderZoneList(); }}
-function addZone(){{ syncZones(); configuredZones.push({{id:'zone_'+Date.now(),name:'Nova área',type:'interest',coordinates:[0,0,1,1]}}); selectedZoneIndex=configuredZones.length-1; selectZone(selectedZoneIndex); }}
+function escapeHtml(value){{ return String(value).replace(/[&<>"']/g,character=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[character])); }}
+function currentZoneIndex(){{ const byId=configuredZones.findIndex(zone=>String(zone.id)===selectedZoneId); if(byId>=0)return byId; return Math.min(Math.max(selectedZoneIndex,0),Math.max(configuredZones.length-1,0)); }}
+function renderZoneList(){{ const list=document.getElementById('zoneList'); list.style.cssText='display:flex;flex-wrap:wrap;gap:8px;margin:2px 0 4px'; list.innerHTML=configuredZones.map((zone,index)=>{{ const selected=String(zone.id)===selectedZoneId; const style=selected?'margin:0;background:#4169e1;color:#fff;border:1px solid #4169e1':'margin:0;background:#fff;color:#3154bd;border:1px solid #c9d7fb'; const label=zone.name||'Nova área'; return '<button type="button" class="zone-chip '+(selected?'selected':'')+'" style="'+style+'" onclick="selectZone('+index+')">Área '+(index+1)+': '+escapeHtml(label)+'</button>'; }}).join(''); const removeButton=document.getElementById('removeZoneButton'); if(removeButton){{ const canRemove=configuredZones.length>1; removeButton.disabled=!canRemove; removeButton.title=canRemove?'Excluir a área selecionada':'Mantenha pelo menos uma área monitorada'; }} }}
+function selectZone(index,syncCurrent=true){{ if(syncCurrent)syncZones(); if(!configuredZones.length)return; const safeIndex=Math.min(Math.max(Number(index)||0,0),configuredZones.length-1); selectedZoneIndex=safeIndex; const zone=configuredZones[safeIndex]; selectedZoneId=String(zone.id); document.getElementById('zoneName').value=zone.name; document.getElementById('zoneType').value=zone.type; ['x1','y1','x2','y2'].forEach((key,i)=>document.querySelector('[name='+key+']').value=zone.coordinates[i]); renderZoneList(); drawZone(); }}
+function setZones(zones){{ configuredZones=(zones&&zones.length?zones:[{{id:'main',name:'Área monitorada',type:'interest',coordinates:[0,0,1,1]}}]).map((zone,index)=>({{id:zone.id||('zone_'+index),name:zone.name||'Área monitorada',type:zone.type||'interest',coordinates:zone.coordinates||[0,0,1,1]}})); selectedZoneIndex=0; selectedZoneId=String(configuredZones[0].id); selectZone(0,false); }}
+function syncZones(){{ if(!configuredZones.length)return; const index=currentZoneIndex(); selectedZoneIndex=index; const current=configuredZones[index]; selectedZoneId=String(current.id); current.name=document.getElementById('zoneName').value.trim(); current.type=document.getElementById('zoneType').value||'interest'; current.coordinates=['x1','y1','x2','y2'].map(key=>Number(document.querySelector('[name='+key+']').value)||0); configuredZones[index]=current; document.getElementById('zonesJson').value=JSON.stringify(configuredZones); renderZoneList(); }}
+function addZone(){{ syncZones(); configuredZones.push({{id:'zone_'+Date.now(),name:'',type:'interest',coordinates:[0,0,1,1]}}); const index=configuredZones.length-1; selectedZoneIndex=index; selectedZoneId=String(configuredZones[index].id); selectZone(index,false); }}
+function removeSelectedZone(){{ syncZones(); if(configuredZones.length<=1){{ status.className='status error'; status.style.display='block'; status.textContent='Mantenha pelo menos uma área monitorada.'; return; }} const index=currentZoneIndex(); const removed=configuredZones[index]; configuredZones.splice(index,1); const nextIndex=Math.min(index,configuredZones.length-1); selectedZoneIndex=nextIndex; selectedZoneId=String(configuredZones[nextIndex].id); status.className='status success'; status.style.display='block'; status.textContent='Área "'+removed.name+'" excluída.'; selectZone(nextIndex,false); }}
 function setEditMode(editing){{ document.getElementById('formTitle').textContent=editing?'Editar câmera':'Cadastrar câmera'; document.getElementById('deleteCurrent').style.display=editing?'inline-block':'none'; document.getElementById('recordingSettings').style.display=editing?'none':'block'; }}
 function openCamera(index){{ const camera=registeredCameras[index]; if(!camera)return; document.getElementById('sectionSelect').value='register'; switchSection(); document.getElementById('cameraId').value=camera.id||''; document.getElementById('deleteCurrent').style.display='inline-block'; document.querySelector('[name=camera_name]').value=camera.name||''; const savedSource=String(camera.source??''); sourceType.value=/^[0-9]+$/.test(savedSource)?'webcam':'ip'; updateSourceMode(); source.value=savedSource; if(sourceType.value==='webcam') document.getElementById('webcamDevices').value=savedSource; else {{ try {{ const url=new URL(savedSource); document.getElementById('protocol').value=url.protocol.replace(':',''); document.getElementById('rtspUser').value=decodeURIComponent(url.username||''); document.getElementById('rtspPassword').value=decodeURIComponent(url.password||''); document.getElementById('rtspHost').value=url.hostname||''; document.getElementById('rtspPort').value=url.port||'554'; document.getElementById('rtspPath').value=(url.pathname||'')+(url.search||''); }} catch(error) {{ }} }} ['x1','y1','x2','y2'].forEach((key,i)=>document.querySelector('[name='+key+']').value=(camera.zone||[0,0,1,1])[i]); setDetectionClasses((camera.detection||{}).classes&&camera.detection.classes.length?camera.detection.classes:defaultDetectionClasses); setZones(camera.zones||[{id:'main',name:camera.zone_name||'Área monitorada',type:camera.zone_type||'interest',coordinates:camera.zone||[0,0,1,1]}]); status.className='status success'; status.style.display='block'; status.textContent='Câmera carregada para edição.'; setTimeout(loadPreview,0); }}
 function openCurrentCamera(){{ const name=document.querySelector('[name=camera_name]').value.trim(); if(!name)return; const data=new URLSearchParams({{camera:name}}); fetch('/monitor/open',{{method:'POST',headers:{{'Content-Type':'application/x-www-form-urlencoded'}},body:data.toString()}}); }}
@@ -309,16 +392,21 @@ function switchSection(){{ const section=document.getElementById('sectionSelect'
 let lastSourceType='webcam';
 function buildRtsp(){{ const user=document.getElementById('rtspUser').value, pass=document.getElementById('rtspPassword').value, host=document.getElementById('rtspHost').value.trim(), port=document.getElementById('rtspPort').value.trim()||'554', path=document.getElementById('rtspPath').value.trim(); if(!host) return ''; const auth=user ? encodeURIComponent(user)+(pass?':'+encodeURIComponent(pass):'')+'@' : ''; return document.getElementById('protocol').value+'://'+auth+host+':'+port+(path?(path.startsWith('/')?path:'/'+path):''); }}
 function buildPresetPath(){{ const vendor=document.getElementById('vendor').value, channel=document.getElementById('channel').value||'1', stream=document.getElementById('stream').value, path=document.getElementById('rtspPath'); if(vendor==='intelbras') path.value='/cam/realmonitor?channel='+channel+'&subtype='+(stream==='main'?'0':'1'); else if(vendor==='hikvision') path.value='/Streaming/Channels/'+channel+(stream==='main'?'01':'02'); else {{ path.readOnly=false; path.value=''; return; }} path.readOnly=true; }}
+function detectWebcams(){{ const button=document.getElementById('detectWebcamsButton'), select=document.getElementById('webcamDevices'); button.disabled=true; button.textContent='Detectando webcams...'; select.innerHTML='<option value="">Detectando...</option>'; fetch('/webcams').then(async response=>{{ const devices=await response.json(); if(!response.ok) throw new Error(devices.message||'Falha ao detectar webcams.'); if(!devices.length){{ select.innerHTML='<option value="">Nenhuma webcam dispon?vel</option>'; source.value=''; status.className='status error'; status.style.display='block'; status.textContent='Nenhuma webcam real dispon?vel para cadastro.'; return; }} select.innerHTML='<option value="">Selecione uma webcam</option>'+devices.map(device=>'<option value="'+device.index+'">'+device.label+'</option>').join(''); status.className='status'; status.style.display='none'; }}).catch(error=>{{ select.innerHTML='<option value="">Falha ao detectar webcams</option>'; source.value=''; status.className='status error'; status.style.display='block'; status.textContent=error.message||'N?o foi poss?vel detectar webcams. Consulte o log do configurador.'; }}).finally(()=>{{ button.disabled=false; button.textContent='Detectar webcams'; }}); }}
 function discoverCameras(){{ const select=document.getElementById('onvifDevices'); select.style.display='block'; select.innerHTML='<option>Procurando câmeras...</option>'; fetch('/discover').then(response=>response.json()).then(devices=>{{ if(!devices.length){{ select.innerHTML='<option value="">Nenhuma câmera ONVIF encontrada</option>'; status.className='status error'; status.style.display='block'; status.textContent='Nenhuma câmera ONVIF encontrada. Verifique se o equipamento está na mesma rede e se o ONVIF está habilitado.'; source.value=''; return; }} status.style.display='none'; select.innerHTML='<option value="">Selecione uma câmera encontrada</option>'+devices.map((d,i)=>'<option value="'+i+'">'+d.ip+' — '+d.xaddr+'</option>').join(''); select.devices=devices; }}).catch(()=>{{ select.innerHTML='<option value="">Falha ao buscar câmeras</option>'; status.className='status error'; status.style.display='block'; status.textContent='Não foi possível procurar câmeras ONVIF nesta rede.'; }}); }}
 function addRtspCredentials(uri){{ try{{ const url=new URL(uri); const user=document.getElementById('rtspUser').value.trim(), pass=document.getElementById('rtspPassword').value; if(user) url.username=user; if(pass) url.password=pass; return url.toString(); }}catch(error){{ return uri; }} }}
 function selectDiscoveredCamera(){{ const select=document.getElementById('onvifDevices'), device=select.devices&&select.devices[select.value]; if(!device)return; const host=document.getElementById('rtspHost'); host.value=device.ip; host.readOnly=true; source.value=''; status.className='status success'; status.style.display='block'; status.textContent='Câmera encontrada. Preencha usuário e senha e teste a conexão.'; }}
 function syncSource(){{ if(sourceType.value==='webcam') source.value=document.getElementById('webcamDevices').value; else if(sourceType.value==='ip'){{ const built=buildRtsp(); if(built) source.value=built; }} else if(sourceType.value==='onvif' && source.value) source.value=addRtspCredentials(source.value); }}
 function validateSave(){{ syncSource(); syncDetection(); syncZones(); const name=document.querySelector('[name=camera_name]').value.trim(); nameStatus.className='status'; nameStatus.style.display='none'; if(!name){{ nameStatus.className='status error'; nameStatus.style.display='block'; nameStatus.textContent='Informe um nome para a câmera antes de salvar.'; return false; }} return true; }}
 function updateSourceMode(){{ const type=sourceType.value; if(type!==lastSourceType){{ source.value=''; document.getElementById('webcamDevices').value=''; ['rtspUser','rtspPassword','rtspHost','rtspPath'].forEach(id=>document.getElementById(id).value=''); img.src=''; img.style.display='none'; canvas.style.display='none'; retryButton.style.display='none'; status.className='status'; status.textContent=''; status.style.display='none'; }} lastSourceType=type; webcamControls.style.display=type==='webcam'?'block':'none'; ipControls.style.display=(type==='ip'||type==='onvif')?'block':'none'; onvifDiscovery.style.display=type==='onvif'?'block':'none'; manualRtsp.style.display=type==='ip'?'block':'none'; document.getElementById('rtspHost').readOnly=type==='onvif'; if(type==='ip') buildPresetPath(); }}
-function testConnection(){{ syncSource(); status.className='status'; status.style.display='block'; const type=sourceType.value; if(type==='webcam' && !/^[0-9]+$/.test(source.value)){{ status.className='status error'; status.textContent='Selecione uma webcam disponível antes de testar.'; return; }} if(type==='ip' && (!document.getElementById('rtspHost').value.trim() || !document.getElementById('rtspPort').value.trim() || !document.getElementById('rtspPath').value.trim())){{ status.className='status error'; status.textContent='Preencha endereço IP, porta e caminho RTSP antes de testar.'; return; }} if(type==='onvif' && (!document.getElementById('rtspHost').value.trim() || !document.getElementById('rtspUser').value.trim() || !document.getElementById('rtspPassword').value.trim())){{ status.className='status error'; status.textContent='Preencha endereço, usuário e senha ONVIF antes de testar.'; return; }} if(type==='onvif' && !source.value){{ status.textContent='Obtendo o stream ONVIF pelo endereço informado...'; const onvifSelect=document.getElementById('onvifDevices'), onvifDevice=onvifSelect.devices&&onvifSelect.devices[onvifSelect.value], params=new URLSearchParams({{xaddr:onvifDevice?onvifDevice.xaddr:'',host:document.getElementById('rtspHost').value.trim(),user:document.getElementById('rtspUser').value,password:document.getElementById('rtspPassword').value}}); fetch('/onvif/streams?'+params.toString()).then(async response=>{{ const streams=await response.json(); if(!response.ok||!streams.length) throw new Error('Não foi possível obter um stream ONVIF para esse endereço.'); source.value=addRtspCredentials(streams[0].uri); testConnection(); }}).catch(error=>{{ status.className='status error'; status.textContent=error.message||'Não foi possível obter o stream ONVIF.'; }}); return; }} status.textContent='Testando conexão...'; fetch('/test?type='+encodeURIComponent(type)+'&source='+encodeURIComponent(source.value)+'&name='+encodeURIComponent(document.querySelector('[name=camera_name]').value)).then(async response=>{{ const message=await response.text(); status.className='status '+(response.ok?'success':'error'); status.textContent=message; if(response.ok) loadPreview(); }}).catch(()=>{{ status.className='status error'; status.textContent='Não foi possível testar a fonte.'; }}); }}
+function testConnection(){{ syncSource(); status.className='status'; status.style.display='block'; const type=sourceType.value; if(type==='webcam' && !/^[0-9]+$/.test(source.value)){{ status.className='status error'; status.textContent='Selecione uma webcam disponível antes de testar.'; return; }} if(type==='ip' && (!document.getElementById('rtspHost').value.trim() || !document.getElementById('rtspPort').value.trim() || !document.getElementById('rtspPath').value.trim())){{ status.className='status error'; status.textContent='Preencha endereço IP, porta e caminho RTSP antes de testar.'; return; }} if(type==='onvif' && (!document.getElementById('rtspHost').value.trim() || !document.getElementById('rtspUser').value.trim() || !document.getElementById('rtspPassword').value.trim())){{ status.className='status error'; status.textContent='Preencha endereço, usuário e senha ONVIF antes de testar.'; return; }} if(type==='onvif' && !source.value){{ status.textContent='Obtendo o stream ONVIF pelo endereço informado...'; const onvifSelect=document.getElementById('onvifDevices'), onvifDevice=onvifSelect.devices&&onvifSelect.devices[onvifSelect.value], params=new URLSearchParams({{xaddr:onvifDevice?onvifDevice.xaddr:'',host:document.getElementById('rtspHost').value.trim(),user:document.getElementById('rtspUser').value,password:document.getElementById('rtspPassword').value}}); fetch('/onvif/streams?'+params.toString()).then(async response=>{{ const streams=await response.json(); if(!response.ok||!streams.length) throw new Error('Não foi possível obter um stream ONVIF para esse endereço.'); source.value=addRtspCredentials(streams[0].uri); testConnection(); }}).catch(error=>{{ status.className='status error'; status.textContent=error.message||'Não foi possível obter o stream ONVIF.'; }}); return; }} status.textContent='Testando conexão...'; fetch('/test?type='+encodeURIComponent(type)+'&source='+encodeURIComponent(source.value)+'&name='+encodeURIComponent(document.querySelector('[name=camera_name]').value)).then(async response=>{{ const message=await response.text(); status.className='status '+(response.ok?'success':'error'); status.textContent=message; if(response.ok) loadPreview(); }}).catch(error=>{{ status.className='status error'; status.textContent='Nao foi possivel testar a fonte: '+(error.message||'falha de comunicacao com o painel. Consulte o log do configurador.'); }}); }}
 function loadPreview(){ if(!source.value){{ return; }} const overlay=document.getElementById('previewOverlay'); retryButton.style.display='none'; if(overlay) overlay.style.display='none'; img.style.display='none'; canvas.style.display='none'; img.onload=()=>{{ if(overlay) overlay.style.display='none'; img.style.display='block'; canvas.style.display='block'; retryButton.style.display='none'; canvas.width=img.clientWidth; canvas.height=img.clientHeight; drawZone(); }}; img.onerror=()=>{{ img.style.display='none'; canvas.style.display='none'; if(overlay){{ overlay.textContent=sourceType.value==='webcam'?'Câmera/NVR sendo utilizada':'OFFLINE'; overlay.style.display='flex'; }} retryButton.style.display='inline-block'; clearTimeout(window.previewRetryTimer); window.previewRetryTimer=setTimeout(loadPreview,5000); }}; img.src='/stream?source='+encodeURIComponent(source.value)+'&t='+Date.now(); clearInterval(window.previewPollTimer); window.previewPollTimer=setInterval(()=>{{ if(source.value && previewSection.style.display!=='none') img.src='/stream?source='+encodeURIComponent(source.value)+'&t='+Date.now(); }},1500); }
 function drawZone(){ ctx.clearRect(0,0,canvas.width,canvas.height); const colors={{products:'#f79009',checkout:'#12b76a',entrance:'#2e90fa',exit:'#f04438',interest:'#ff7a00'}}; configuredZones.forEach((zone,index)=>{{ const [x1,y1,x2,y2]=zone.coordinates.map((value,i)=>value*(i%2?canvas.height:canvas.width)); ctx.strokeStyle=colors[zone.type]||'#ff7a00'; ctx.lineWidth=index===selectedZoneIndex?4:2; ctx.strokeRect(x1,y1,x2-x1,y2-y1); ctx.font='bold 13px sans-serif'; ctx.fillStyle=ctx.strokeStyle; ctx.fillText(zone.name,x1+5,Math.max(15,y1-6)); }}); }
 let start=null; canvas.addEventListener('mousedown',e=>{const r=canvas.getBoundingClientRect();start=[e.clientX-r.left,e.clientY-r.top];}); canvas.addEventListener('mouseup',e=>{if(!start)return;const r=canvas.getBoundingClientRect(),end=[e.clientX-r.left,e.clientY-r.top],x1=Math.min(start[0],end[0])/canvas.width,y1=Math.min(start[1],end[1])/canvas.height,x2=Math.max(start[0],end[0])/canvas.width,y2=Math.max(start[1],end[1])/canvas.height; [['x1',x1],['y1',y1],['x2',x2],['y2',y2]].forEach(([n,v])=>document.querySelector('[name='+n+']').value=v.toFixed(4));start=null;syncZones();drawZone();});
+function refreshSelectedZone(){ syncZones(); drawZone(); }
+document.getElementById('zoneName').addEventListener('input',refreshSelectedZone);
+document.getElementById('zoneType').addEventListener('change',refreshSelectedZone);
+['x1','y1','x2','y2'].forEach(name=>document.querySelector('[name='+name+']').addEventListener('input',refreshSelectedZone));
 document.querySelectorAll('.camera-card').forEach(card=>card.addEventListener('click',()=>setEditMode(true)));
 updateSourceMode(); simplifyMenu(); setEditMode(false); switchSection();
 </script></div></main>""")
@@ -336,7 +424,7 @@ document.querySelectorAll('.camera-card').forEach(card=>card.addEventListener('c
  document.getElementById('sectionSelect').addEventListener('change',()=>{ if(document.getElementById('sectionSelect').value==='register'){ resetNewCamera(); showEditFields(false); } });
 </script></div>""")
         page = page.replace("<div class='preview-shell'>", "<div class='preview-shell' style='display:inline-block;width:fit-content;max-width:100%'>")
-        page = page.replace("if(response.ok) loadPreview();", "if(response.ok){ setMonitoringView(true); loadPreview(); } else { setMonitoringView(false); retryButton.style.display='inline-block'; }")
+        page = page.replace("if(response.ok) loadPreview();", "if(response.ok){ window.previewToken=response.headers.get('X-Vigil-Preview-Token')||''; setMonitoringView(true); loadPreview(); } else { window.previewToken=''; setMonitoringView(false); retryButton.style.display='inline-block'; }")
         page = page.replace("status.className='status error'; status.style.display='block'; status.textContent='Informe o nome da câmera antes de testar.'", "nameStatus.className='status error'; nameStatus.style.display='block'; nameStatus.textContent='Informe o nome da câmera antes de testar.'")
         page = page.replace("if(type==='webcam' && !/^[0-9]+$/.test(source.value))", "if(type==='webcam' && !document.getElementById('webcamDevices').value)")
         page = page.replace("+'&source='+encodeURIComponent(source.value))", "+'&source='+encodeURIComponent(source.value)+'&name='+encodeURIComponent(document.querySelector('[name=camera_name]').value))")
@@ -353,16 +441,91 @@ setMonitoringView(false);
         page = page.replace("</script></div>", "syncSource=function(){ if(sourceType.value==='webcam') source.value=document.getElementById('webcamDevices').value; else if(sourceType.value==='ip'){ const built=buildRtsp(); if(built) source.value=built; } else if(sourceType.value==='onvif' && source.value) source.value=addRtspCredentials(source.value); }; const _testConnection=testConnection; testConnection=function(){ syncSource(); return _testConnection(); };\n</script></div>")
         # O status de conexão deve ficar associado ao nome da câmera, logo abaixo
         # do campo, sem depender de reordenação via JavaScript no navegador.
+        # A preview can only run after a successful test or while editing an
+        # existing camera. This also cancels retry timers when the user leaves
+        # the form, so a stale webcam source can never reopen in the background.
+        page = page.replace("</script></div>", """const _vigilSetMonitoringView=setMonitoringView;
+window.__vigilPreviewAllowed=false;
+setMonitoringView=function(visible){ window.__vigilPreviewAllowed=Boolean(visible); const coordinatesPanel=document.getElementById('coordinatesPanel'); if(coordinatesPanel) coordinatesPanel.style.display=visible?'grid':'none'; if(!visible){ clearInterval(window.previewPollTimer); clearTimeout(window.previewRetryTimer); img.onload=null; img.onerror=null; img.removeAttribute('src'); } const result=_vigilSetMonitoringView(visible); if(visible){ const analysis=document.getElementById('analysisSettings'), recording=document.getElementById('recordingSettings'); if(analysis) analysis.style.display='grid'; if(recording) recording.style.display='grid'; } return result; };
+const _vigilLoadPreview=loadPreview;
+loadPreview=function(){ if(!window.__vigilPreviewAllowed || previewSection.style.display==='none' || !source.value) return; return _vigilLoadPreview(); };
+const _vigilSwitchSection=switchSection;
+switchSection=function(){ _vigilSwitchSection(); const section=document.getElementById('sectionSelect').value; if(section!=='register' || !document.getElementById('cameraId').value) setMonitoringView(false); };
+const _vigilOpenCamera=openCamera;
+openCamera=function(index){ _vigilOpenCamera(index); setMonitoringView(true); loadPreview(); };
+setMonitoringView(false);
+</script></div>""")
+        page = page.replace(
+            "'&t='+Date.now()",
+            "'&token='+encodeURIComponent(window.previewToken||'')+'&t='+Date.now()",
+        )
+        page = page.replace("</style>", """
+.source-panel{display:grid;gap:10px;padding:16px;border:1px solid #dfe6f2;border-radius:12px;background:#f8faff}
+.field-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.field-heading label{margin:0}
+.compact-button{padding:8px 12px;font-size:13px;white-space:nowrap}
+#webcamDevices{margin-top:0}
+#cameraForm{gap:18px}
+#cameraForm>h2{margin:12px 0 4px!important}
+#cameraForm>label{margin-top:0}
+.analysis-settings,.form-panel{display:grid;gap:14px;padding:20px;border:1px solid #dfe6f2;border-radius:14px;background:#fbfcff}
+.analysis-settings h3,.form-panel h3{margin:0;color:#172b4d;font-size:17px}
+.analysis-settings>.hint,.form-panel .hint{margin:0}
+.detection-grid{grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px}
+.detection-group{display:block!important;margin:0!important;padding:14px!important;border:1px solid #dbe4f0!important;border-radius:11px!important;background:#fff!important;min-width:0}
+.detection-group h4{margin:0 0 10px;font-size:13px;color:#475467}
+.detection-options{display:grid;gap:7px}
+.detection-option{display:flex!important;align-items:center!important;justify-content:flex-start!important;gap:9px!important;width:100%!important;margin:0!important;padding:9px 10px!important;border:1px solid transparent;border-radius:8px;background:#f8fafc;font-weight:600!important;cursor:pointer}
+.detection-option:hover{border-color:#b7c8f7;background:#f3f6ff}
+.detection-option input{appearance:auto;width:16px!important;height:16px!important;min-width:16px!important;margin:0!important;padding:0!important;accent-color:#4169e1;flex:0 0 16px}
+.detection-option span{line-height:1.2}
+.info-callout{padding:11px 12px;border:1px solid #c9d7fb;border-radius:9px;background:#f2f6ff;color:#344054;font-size:13px;line-height:1.45}
+.info-callout strong{color:#1d3e91}
+.zone-editor{display:grid;gap:12px}
+.zone-fields,.coordinate-grid,.recording-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.zone-fields label,.coordinate-grid label,.recording-grid label{margin:0;font-size:13px}
+.panel-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
+.coordinate-scale{padding:4px 8px;border-radius:999px;background:#e9efff;color:#3154bd;font-size:12px;font-weight:700;white-space:nowrap}
+.zone-list{gap:8px}
+.zone-chip{padding:8px 11px}
+#addZoneButton{justify-self:start;margin:0}
+.zone-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:4px}
+.zone-actions button{margin:0}
+.danger-outline{background:#fff!important;color:#b42318!important;border:1px solid #f5b8b3!important}
+.danger-outline:hover{background:#fef0ef!important;transform:none!important}
+.danger-outline:disabled{cursor:not-allowed;opacity:.5;background:#f8fafc!important;color:#98a2b3!important;border-color:#d0d5dd!important}
+#registeredList{padding-top:2px}
+#registeredList .camera-list{display:grid;gap:10px}
+.camera-card{width:100%;text-align:left;box-shadow:none}
+.camera-card:hover{border-color:#b7c8f7!important;background:#f3f6ff!important}
+@media(max-width:650px){.field-heading{align-items:flex-start;flex-direction:column}.compact-button{width:100%}.zone-fields,.coordinate-grid,.recording-grid{grid-template-columns:1fr}.panel-heading{flex-direction:column;gap:8px}.zone-actions{align-items:stretch;flex-direction:column}.zone-actions button{width:100%}}
+</style>""")
+        page = page.replace("Nenhuma webcam dispon?vel", "Nenhuma webcam disponível")
+        page = page.replace("Nenhuma webcam real dispon?vel para cadastro.", "Nenhuma webcam real disponível para cadastro.")
+        page = page.replace("N?o foi poss?vel detectar webcams.", "Não foi possível detectar webcams.")
+        page = page.replace(
+            "A c\ufffdmera s\ufffd \ufffd acessada ao detectar dispositivos ou testar a conex\ufffdo.",
+            "A c&acirc;mera s&oacute; &eacute; acessada ao detectar dispositivos ou testar a conex&atilde;o.",
+        )
+        page = page.replace(
+            "A c\u00e2mera s\u00f3 \u00e9 acessada ao detectar dispositivos ou testar a conex\u00e3o.",
+            "A c&acirc;mera s&oacute; &eacute; acessada ao detectar dispositivos ou testar a conex&atilde;o.",
+        )
         self._respond(page)
 
     def _stream(self, query_string):
-        source = parse_qs(query_string).get("source", [""])[0]
+        query = parse_qs(query_string)
+        source = query.get("source", [""])[0]
         if not source:
             return self._respond("Fonte não informada.", 400, "text/plain; charset=utf-8")
+        cameras = load_config().get("capture", {}).get("cameras", []) or []
+        camera = next((item for item in cameras if str(item.get("source")) == source), None)
+        token = query.get("token", [""])[0]
+        if camera is None and not preview_is_authorized(source, token):
+            # A preview must come from a saved camera or from a successful test.
+            return self._respond("Preview nao autorizada para esta fonte.", 403, "text/plain; charset=utf-8")
         status = runtime_status()
         if status.get("running"):
-            cameras = load_config().get("capture", {}).get("cameras", []) or []
-            camera = next((item for item in cameras if str(item.get("source")) == source), None)
             if camera:
                 display_open = bool(status.get("display_open")) and status.get("display_camera") == camera.get("name")
                 if display_open:
@@ -392,25 +555,21 @@ setMonitoringView(false);
                     self.end_headers()
                     self.wfile.write(data)
                     return
-        value = int(source) if source.isdigit() else source
-        cap = cv2.VideoCapture(value, cv2.CAP_DSHOW) if isinstance(value, int) else cv2.VideoCapture(value, cv2.CAP_FFMPEG)
-        if not cap.isOpened():
-            cap.release()
-            return self._respond("Não foi possível abrir a fonte.", 502, "text/plain; charset=utf-8")
-        first_ok, first_frame = cap.read()
-        if not first_ok or first_frame is None:
-            cap.release()
-            return self._respond(
-                "A fonte foi aberta, mas não entregou nenhum quadro. Verifique o caminho RTSP, as credenciais e o stream.",
-                502,
-                "text/plain; charset=utf-8",
-            )
+        cap = None
+        try:
+            cap, first_frame, _backend = open_source(source)
+        except SourceFailure as error:
+            LOGGER.warning("Stream rejeitado para %r: %s (%s)", source, error.public_message(), error.detail)
+            return self._respond(f"{error.public_message()} Consulte o log do processo para detalhes.", 502, "text/plain; charset=utf-8")
+        except Exception:
+            LOGGER.exception("Erro inesperado ao abrir stream da fonte %r", source)
+            return self._respond("[STREAM_ERROR] O stream falhou. Consulte o log do processo para detalhes.", 502, "text/plain; charset=utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
         try:
-            ok, frame = first_ok, first_frame
+            ok, frame = True, first_frame
             while True:
                 if not ok:
                     break
@@ -421,11 +580,20 @@ setMonitoringView(false);
                 self.wfile.write(encoded.tobytes())
                 self.wfile.write(b"\r\n")
                 time.sleep(0.1)
-                ok, frame = cap.read()
+                try:
+                    ok, frame = cap.read()
+                except cv2.error:
+                    LOGGER.exception("OpenCV falhou durante stream da fonte %r", source)
+                    break
+                except Exception:
+                    LOGGER.exception("Erro inesperado durante stream da fonte %r", source)
+                    break
         except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
-            pass
+            LOGGER.info("Cliente encerrou o stream da fonte %r", source)
+        except Exception:
+            LOGGER.exception("Erro escrevendo stream da fonte %r", source)
         finally:
-            cap.release()
+            safe_release(cap, source, "stream")
 
     def do_POST(self):
         if urlsplit(self.path).path == "/monitor/open":
@@ -457,8 +625,15 @@ setMonitoringView(false);
             cameras[:] = [camera for camera in cameras if camera.get("id") != camera_id]
             if len(cameras) == original_count:
                 return self._respond("Câmera não encontrada.", 404, "text/plain; charset=utf-8")
-            with CONFIG_PATH.open("w", encoding="utf-8") as file:
-                yaml.safe_dump(config, file, allow_unicode=True, sort_keys=False)
+            if not cameras:
+                # Não deixe a fonte legada parecer uma câmera ativa depois da
+                # exclusão do último cadastro.
+                config.setdefault("capture", {})["source"] = None
+            try:
+                save_config(config)
+            except Exception:
+                LOGGER.exception("Falha ao salvar a configuração após excluir uma câmera")
+                return self._respond("[CONFIG_SAVE_ERROR] Não foi possível salvar a exclusão. Consulte o log do configurador.", 500, "text/plain; charset=utf-8")
             return self._respond("Câmera excluída.", 200, "text/plain; charset=utf-8")
         source = values.get("source", "").strip()
         if not source:
@@ -549,16 +724,21 @@ setMonitoringView(false);
         config.setdefault("events", {})["restricted_zone"] = zone
         config.setdefault("recording", {})["before_seconds"] = int(parse_number(values.get("before"), 10))
         config.setdefault("recording", {})["after_seconds"] = int(parse_number(values.get("after"), 5))
-        with CONFIG_PATH.open("w", encoding="utf-8") as file:
-            yaml.safe_dump(config, file, allow_unicode=True, sort_keys=False)
+        try:
+            save_config(config)
+        except Exception:
+            LOGGER.exception("Falha ao salvar a configuração da câmera %s", camera_name)
+            return self._respond("[CONFIG_SAVE_ERROR] Não foi possível salvar a configuração. Consulte o log do configurador.", 500, "text/plain; charset=utf-8")
         self._respond("<h1>Configuração salva.</h1><p>O programa principal aplicará a alteração automaticamente.</p><p><a href='/'>Voltar</a></p>")
 
-    def _respond(self, body, status=200, content_type="text/html; charset=utf-8"):
+    def _respond(self, body, status=200, content_type="text/html; charset=utf-8", headers=None):
         data = body.encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
         self.send_header("Pragma", "no-cache")
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         try:
