@@ -135,13 +135,17 @@ Para um NVR com várias câmeras, cada canal que será monitorado deve ter um ca
 
 Cada área é armazenada como `[x1, y1, x2, y2]`, com todos os valores entre `0` e `1`, dentro da lista `camera.zones`. `0,0` é o canto superior esquerdo e `1,1` é o canto inferior direito. O painel converte o desenho para essa escala, então as áreas continuam válidas mesmo quando a resolução muda.
 
-Quando o centro da caixa de uma detecção selecionada entra em uma área, o motor cria um evento como `person_in_restricted_zone` ou `handbag_in_restricted_zone`. O JSON inclui classe, ID rastreado, confiança, `zone_id` e `zone_name`. O cooldown evita repetir o mesmo alerta continuamente. O gravador mantém os últimos `recording.before_seconds` de vídeo e continua por `recording.after_seconds` depois do evento.
+Quando o centro da caixa de uma detecção selecionada entra em uma área, o motor cria um evento como `person_in_restricted_zone` ou `handbag_in_restricted_zone`. Ao mudar de uma área nomeada para outra, o mesmo objeto rastreado gera uma nova entrada na linha do tempo, mesmo quando as áreas encostam. O JSON inclui classe, ID rastreado, confiança, `zone_id`, `zone_name`, `zone_type` e a linha do tempo do clipe. O cooldown evita repetir a entrada na mesma área continuamente. O gravador mantém os últimos `recording.before_seconds` de vídeo e continua por `recording.after_seconds` após cada transição, até `recording.max_event_seconds`.
 
-Por padrão, os arquivos são gravados em `events/clips/`:
+Por padrão, os arquivos são gravados em `events/clips/<camera>/`:
 
-- `event_YYYYMMDD_HHMMSS_microssegundos.mp4`: clipe original do evento.
-- `event_YYYYMMDD_HHMMSS_microssegundos_analise.mp4`: cópia com caixas, classes e áreas desenhadas.
-- `event_YYYYMMDD_HHMMSS_microssegundos.json`: tipo, confiança, área, horário e caminhos dos arquivos.
+- `incidents/event_YYYYMMDD_HHMMSS_microssegundos/original.mp4`: clipe original.
+- `incidents/event_YYYYMMDD_HHMMSS_microssegundos/analise.mp4`: cópia com caixas, classes e áreas desenhadas.
+- `incidents/event_YYYYMMDD_HHMMSS_microssegundos/evento.json`: metadados e linha do tempo do incidente.
+- `<nome-da-area>/area.json`: metadados de cada área configurada.
+- `<nome-da-area>/event_....json`: referência pesquisável para cada incidente que tocou a área.
+
+Um incidente que passa por várias áreas mantém um único par de vídeos. Cada área configurada recebe uma pasta diretamente dentro da câmera, com o nome usado no painel. Se houver nomes repetidos, o ID é acrescentado apenas nesses casos. Essas pastas armazenam referências JSON para consulta, sem duplicar arquivos de vídeo.
 
 ## Configuração YAML
 
@@ -149,6 +153,14 @@ Um exemplo mínimo:
 
 ```yaml
 capture:
+  connection:
+    network_open_timeout_seconds: 8
+    network_read_timeout_seconds: 5
+    frame_stall_timeout_seconds: 5
+    reconnect_initial_seconds: 2
+    reconnect_max_seconds: 30
+    reconnect_stable_seconds: 60
+    webcam_retry_seconds: 10
   cameras:
     - id: entrada
       name: Entrada
@@ -182,13 +194,16 @@ recording:
   fps: 20
   before_seconds: 10
   after_seconds: 5
+  max_event_seconds: 60
 ```
 
 Prefira alterar o YAML pelo painel. A lista `detector.classes` define as classes analisadas; use os nomes do modelo COCO em inglês ou deixe a lista vazia para analisar todas as classes disponíveis. Se for necessário editar manualmente, mantenha `source`, `id`, `zone` e `enabled` válidos. O `app.py` recarrega o arquivo quando seu conteúdo muda e atualiza as câmeras e classes em runtime.
 
+`capture.connection` é uma configuração avançada do sistema. Para fontes de rede, o VIGIL.AI limita a abertura do stream, a espera por quadro e as tentativas de reconexão. Quando uma câmera cai, as tentativas seguem um backoff de `reconnect_initial_seconds` até `reconnect_max_seconds`; após `reconnect_stable_seconds` de vídeo estável, a próxima falha volta ao intervalo inicial. Webcams usam `webcam_retry_seconds`, pois normalmente falham por estarem ocupadas ou desconectadas.
+
 ## Estado e diagnóstico
 
-`runtime_status.json` é escrito pelo monitoramento para indicar câmeras ativas, erros e última atualização. Ele é um artefato local e não deve ser versionado. Uma tela preta com `Câmera/NVR sendo utilizada` significa que a fonte está ocupada pelo `app.py`; `OFFLINE` significa que a fonte não respondeu. Para rede, o painel oferece nova tentativa automática/manual.
+`runtime_status.json` é escrito pelo monitoramento para indicar câmeras ativas, erros, estado da conexão e última atualização. Ele é um artefato local e não deve ser versionado. Uma tela preta com `Câmera/NVR sendo utilizada` significa que a fonte está ocupada pelo `app.py`; `OFFLINE` significa que a fonte não respondeu. O painel informa quando a câmera está conectando, reconectando ou sem entregar quadros.
 
 Mensagens comuns:
 

@@ -13,6 +13,8 @@ MELHORIAS NO CONFIGURADOR
 - Uma fonte já vinculada a uma câmera não pode ser cadastrada novamente até que o cadastro original seja excluído.
 - A tela de edição mostra a fonte vinculada em modo somente leitura.
 - Mensagens e logs de erro ficaram mais claros para fontes indisponíveis, ocupadas ou sem imagem.
+- Câmeras IP/NVR agora usam timeout de abertura e leitura, além de reconexão automática com intervalos progressivos.
+- Webcams indisponíveis aguardam mais tempo entre as tentativas para evitar uso excessivo do dispositivo.
 
 ÁREAS MONITORADAS
 
@@ -21,6 +23,9 @@ MELHORIAS NO CONFIGURADOR
 - Alterar o nome, o tipo ou os limites atualiza imediatamente a etiqueta da área e a prévia.
 - O painel explica o que são detecções monitoradas, áreas monitoradas e os tipos Interesse, Produtos, Caixa, Entrada e Saída.
 - A interface mantém pelo menos uma área por câmera, pois ela é necessária para o monitoramento.
+- A passagem de uma pessoa ou objeto rastreado entre áreas nomeadas, como Entrada → Produtos → Saída, é registrada na linha do tempo do mesmo clipe.
+- Cada transição mantém a gravação ativa pelos segundos posteriores configurados, respeitando o limite máximo do clipe.
+- Os incidentes agora ficam em uma pasta própria por câmera, com referências em diretórios separados por área para consulta sem duplicar vídeos.
 
 MONITORAMENTO E PRÉVIA
 
@@ -36,7 +41,7 @@ PACOTE E DOCUMENTAÇÃO
 
 COMPORTAMENTO ATUAL DAS ÁREAS
 
-Um evento é criado quando o centro de uma classe selecionada entra em uma área daquela câmera. Os tipos de área organizam e identificam a região na prévia, mas ainda não possuem regras próprias. Por exemplo, Produtos + Saída ainda não gera, sozinho, uma conclusão de possível furto.
+Um evento é criado quando o centro de uma classe selecionada entra em uma área daquela câmera. A passagem entre áreas também é registrada na linha do tempo do clipe. Os tipos de área organizam e identificam a região na prévia, mas ainda não possuem regras próprias. Por exemplo, Produtos + Saída ainda não gera, sozinho, uma conclusão de possível furto.
 
 LIMITAÇÕES CONHECIDAS DA VERSÃO ALPHA
 

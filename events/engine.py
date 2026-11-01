@@ -19,12 +19,12 @@ class EventEngine:
             "type": "interest",
             "coordinates": list(self.zone),
         }]
-        self._inside = set()
+        self._zone_by_detection = {}
         self._last_event_at = {}
 
     def process(self, detections, frame_shape):
         height, width = frame_shape[:2]
-        current_inside = set()
+        current_zones = {}
         events = []
         now = datetime.now(timezone.utc)
 
@@ -43,19 +43,25 @@ class EventEngine:
                 if candidate[0] <= center[0] <= candidate[2] and candidate[1] <= center[1] <= candidate[3]:
                     matching_zone = configured_zone
                     break
-            if matching_zone is None:
-                continue
-
             detection_key = (
                 f"{label}:{detection.track_id}"
                 if detection.track_id is not None
                 else f"{label}:anonymous-{index}"
             )
-            current_inside.add(detection_key)
+            if matching_zone is None:
+                continue
 
-            previous = self._last_event_at.get(detection_key)
+            zone_id = str(matching_zone.get("id", "main"))
+            current_zones[detection_key] = zone_id
+            previous_zone_id = self._zone_by_detection.get(detection_key)
+            event_key = f"{detection_key}:{zone_id}"
+
+            previous = self._last_event_at.get(event_key)
             elapsed = (now - previous).total_seconds() if previous else None
-            if detection_key not in self._inside and (elapsed is None or elapsed >= self.cooldown_seconds):
+            # A transition between named areas is meaningful even if their
+            # borders touch. This lets a single tracked person produce the
+            # sequence Entrada -> Produtos -> Saída without a blind gap.
+            if previous_zone_id != zone_id and (elapsed is None or elapsed >= self.cooldown_seconds):
                 event_label = re.sub(r"[^a-z0-9]+", "_", label).strip("_") or "objeto"
                 event = {
                     "type": f"{event_label}_in_restricted_zone",
@@ -64,12 +70,13 @@ class EventEngine:
                     "track_id": detection.track_id,
                     "confidence": detection.conf,
                     "zone": list(matching_zone.get("coordinates", self.zone)),
-                    "zone_id": matching_zone.get("id", "main"),
+                    "zone_id": zone_id,
                     "zone_name": matching_zone.get("name", "Área monitorada"),
+                    "zone_type": matching_zone.get("type", "interest"),
                     "occurred_at": now.isoformat(),
                 }
                 events.append(event)
-                self._last_event_at[detection_key] = now
+                self._last_event_at[event_key] = now
 
-        self._inside = current_inside
+        self._zone_by_detection = current_zones
         return events

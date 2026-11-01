@@ -50,7 +50,38 @@ def _backend_candidates(value: Any):
     return [(cv2.CAP_FFMPEG, "FFmpeg"), (cv2.CAP_ANY, "padrão")]
 
 
-def open_source(source: Any):
+def _open_capture(value: Any, backend: int, backend_name: str, open_timeout_seconds: float | None, read_timeout_seconds: float | None):
+    """Open a capture and apply FFmpeg network timeouts when supported."""
+    if isinstance(value, int) or backend != cv2.CAP_FFMPEG:
+        return cv2.VideoCapture(value, backend)
+
+    params = []
+    open_timeout_property = getattr(cv2, "CAP_PROP_OPEN_TIMEOUT_MSEC", None)
+    read_timeout_property = getattr(cv2, "CAP_PROP_READ_TIMEOUT_MSEC", None)
+    if open_timeout_property is not None and open_timeout_seconds:
+        params.extend((open_timeout_property, max(1, int(open_timeout_seconds * 1000))))
+    if read_timeout_property is not None and read_timeout_seconds:
+        params.extend((read_timeout_property, max(1, int(read_timeout_seconds * 1000))))
+    if not params:
+        return cv2.VideoCapture(value, backend)
+
+    try:
+        return cv2.VideoCapture(value, backend, params)
+    except (TypeError, cv2.error):
+        LOGGER.warning(
+            "O backend %s não aceitou timeouts de rede para %r; usando a abertura padrão.",
+            backend_name,
+            value,
+        )
+        return cv2.VideoCapture(value, backend)
+
+
+def open_source(
+    source: Any,
+    *,
+    network_open_timeout_seconds: float | None = 8.0,
+    network_read_timeout_seconds: float | None = 5.0,
+):
     """Open a source and return ``(capture, first_frame, backend_name)``.
 
     The caller owns the returned capture and must release it. All OpenCV
@@ -64,7 +95,13 @@ def open_source(source: Any):
     for backend, backend_name in _backend_candidates(value):
         cap = None
         try:
-            cap = cv2.VideoCapture(value, backend)
+            cap = _open_capture(
+                value,
+                backend,
+                backend_name,
+                network_open_timeout_seconds,
+                network_read_timeout_seconds,
+            )
             if cap is None or not cap.isOpened():
                 failures.append(f"{backend_name}: não abriu")
                 if cap is not None:

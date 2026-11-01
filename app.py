@@ -94,7 +94,10 @@ def draw_zones(image, zones):
 
 def write_runtime_status(running):
     capture_errors = {}
+    capture_states = {}
     for name, capture in captures.items():
+        health = capture.status()
+        capture_states[name] = health
         error = getattr(capture, "last_error", None)
         if error is not None:
             capture_errors[name] = {
@@ -107,6 +110,7 @@ def write_runtime_status(running):
         "timestamp": time.time(),
         "cameras": list(captures),
         "errors": capture_errors,
+        "capture_states": capture_states,
         "display_open": display_enabled,
         "display_camera": display_camera,
     }
@@ -152,6 +156,8 @@ def reload_runtime(new_config):
     new_detector_config = new_config.get("detector", {})
     detector.confidence = float(new_detector_config.get("confidence", detector.confidence))
     fallback_classes = new_detector_config.get("classes") or ["person"]
+    capture_config = new_config.get("capture", {}) or {}
+    connection_config = capture_config.get("connection", {}) or {}
     camera_list = camera_configs_from(new_config)
     # O detector executa uma inferência única com a união das classes usadas
     # pelas câmeras; cada EventEngine filtra o próprio perfil depois.
@@ -180,7 +186,7 @@ def reload_runtime(new_config):
     recording_config = new_config["recording"]
     for name, camera in desired.items():
         if name not in captures:
-            captures[name] = Capture(camera["source"])
+            captures[name] = Capture(camera["source"], connection=connection_config)
             last_frame_ids[name] = 0
             last_inference[name] = 0.0
             last_people[name] = []
@@ -189,7 +195,10 @@ def reload_runtime(new_config):
                 fps=recording_config["fps"],
                 before_seconds=recording_config["before_seconds"],
                 after_seconds=recording_config["after_seconds"],
+                max_event_seconds=recording_config.get("max_event_seconds", 60),
             )
+        else:
+            captures[name].configure_connection(connection_config)
         zone = camera.get("zone", events_config.get("restricted_zone", [0, 0, 1, 1]))
         zones = camera.get("zones") or [{
             "id": "main",
@@ -197,6 +206,7 @@ def reload_runtime(new_config):
             "type": camera.get("zone_type", "interest"),
             "coordinates": zone,
         }]
+        recorders[name].register_areas(zones)
         engines[name] = EventEngine(
             zone,
             events_config.get("cooldown_seconds", 10),

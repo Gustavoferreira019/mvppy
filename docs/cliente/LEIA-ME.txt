@@ -132,25 +132,29 @@ As caixas coloridas do vídeo identificam o que o modelo encontrou. A confiança
 
 Imagine três áreas separadas na mesma câmera: `Entrada` à esquerda, `Produtos` no centro e `Saída` à direita. Com **Pessoa** marcada em Detecções monitoradas, quando uma pessoa entra na área Entrada, o VIGIL.AI cria um evento e inicia um clipe com os segundos anteriores e posteriores configurados.
 
-Ao caminhar para Produtos ou Saída, a pessoa não gera automaticamente um novo evento. Para isso, ela precisa primeiro sair de todas as áreas e entrar novamente em outra área depois do intervalo de proteção dos eventos. Se as áreas encostarem ou se sobrepuserem, a pessoa é considerada continuamente dentro de uma área e a troca de uma área para outra não gera outro evento.
+Ao caminhar da Entrada para Produtos e depois para Saída, a mesma pessoa rastreada gera uma nova entrada na linha do tempo para cada mudança de área. Isso vale também quando as áreas encostam. O clipe iniciado na Entrada é mantido ativo pelos segundos posteriores configurados a cada mudança, até o limite máximo de duração do evento.
 
-Se outro evento ocorrer enquanto um clipe já estiver sendo gravado para aquela câmera, o clipe atual continua até o tempo posterior configurado. Ele não é estendido nem dividido automaticamente por cada área cruzada.
+O arquivo JSON do clipe mostra essa sequência de áreas. Se a pessoa permanecer na mesma área, não são gerados eventos contínuos; o intervalo de proteção evita repetições da mesma entrada.
 
-Os tipos Entrada, Produtos e Saída identificam e colorem as regiões, mas nesta versão não formam uma sequência automática de possível furto. A regra “pessoa entrou, passou por produtos e saiu” será uma evolução futura; hoje, cada evento registra a entrada de uma classe selecionada em uma área.
+Os tipos Entrada, Produtos e Saída identificam e colorem as regiões, mas nesta versão ainda não concluem automaticamente que houve um furto. A sequência fica registrada como evidência para análise humana; uma regra que atribua risco a “pessoa entrou, passou por produtos e saiu” será uma evolução futura.
 
 8. EVENTOS E CLIPES
 
 Quando uma pessoa entra na zona, o VIGIL.AI mantém os segundos anteriores configurados e continua gravando pelos segundos posteriores.
 
-Os arquivos ficam em:
+Os arquivos ficam organizados por câmera em:
 
 `events\\clips\\NomeDaCamera\\`
 
-Para cada evento podem ser gerados:
+Dentro dessa pasta:
 
-- um vídeo `.mp4` original, sem sobreposição;
-- um vídeo `_analise.mp4` com caixas, classes e áreas desenhadas;
-- um arquivo `.json` com horário, confiança, área e informações do evento.
+- `incidents\\event_...\\original.mp4`: vídeo original do incidente;
+- `incidents\\event_...\\analise.mp4`: vídeo com caixas, classes e áreas desenhadas;
+- `incidents\\event_...\\evento.json`: linha do tempo, áreas, horário, confiança e caminhos dos arquivos;
+- `Varanda\\area.json`: dados da área configurada chamada `Varanda`;
+- `Varanda\\event_....json`: referência para cada incidente que passou por `Varanda`.
+
+Cada área configurada recebe sua própria pasta, usando o nome dado no painel. Por exemplo, áreas chamadas `Varanda`, `Backyard` e `Corredor` criam três pastas diferentes. Somente se duas áreas receberem o mesmo nome o sistema acrescenta o ID para evitar conflito. Os vídeos ficam guardados uma única vez na pasta do incidente. As pastas de área contêm referências leves para consultar todos os incidentes relacionados àquela área, sem duplicar vídeos no disco.
 
 Os arquivos são salvos no computador que executa o VIGIL.AI. Garanta espaço livre suficiente em disco. O programa precisa estar aberto para detectar movimentos e gerar novos eventos.
 
@@ -159,6 +163,8 @@ Os arquivos são salvos no computador que executa o VIGIL.AI. Garanta espaço li
 **OFFLINE ou conexão recusada**
 
 Confira energia, cabo ou Wi-Fi, endereço IP, porta, usuário, senha e permissões RTSP/ONVIF. Verifique também se outro programa ou gravador já está ocupando o dispositivo.
+
+Para câmera IP, ONVIF ou NVR, o VIGIL.AI tenta reconectar automaticamente quando o stream cai. As tentativas começam após poucos segundos e aumentam gradualmente até 30 segundos para não sobrecarregar a rede ou o equipamento. O cartão da câmera pode mostrar **Reconectando** enquanto isso acontece; quando o vídeo volta a ficar estável, o intervalo volta ao normal.
 
 **Webcam sem imagem, congelada ou com ruído**
 

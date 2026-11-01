@@ -307,13 +307,31 @@ class SetupHandler(BaseHTTPRequestHandler):
                 return "▣"
             return "<span style='display:inline-block;position:relative;width:22px;height:15px;border-radius:3px;background:#667085'><span style='position:absolute;right:-5px;top:4px;width:6px;height:7px;border-radius:1px;background:#667085'></span><span style='position:absolute;left:6px;top:3px;width:9px;height:9px;border:2px solid #fff;border-radius:50%'></span></span>"
 
-        def camera_enabled(camera):
+        def camera_runtime_state(camera):
             configured = camera.get("enabled", True) not in (False, 0, "false", "0")
-            return configured and camera.get("name") in runtime.get("cameras", [])
+            if not configured:
+                return "Desativada", "#98a2b3", "inactive"
+            health = (runtime.get("capture_states") or {}).get(camera.get("name"), {})
+            state = health.get("state")
+            if state == "connected":
+                return "Ativa", "#12b76a", "active"
+            if state == "connecting":
+                return "Conectando", "#2e90fa", "active"
+            if state == "reconnecting":
+                retry = health.get("retry_in_seconds")
+                suffix = f" em {retry:g}s" if isinstance(retry, (int, float)) else ""
+                return f"Reconectando{suffix}", "#f79009", "inactive"
+            if state == "stalled":
+                return "Sem quadros", "#f04438", "inactive"
+            return "Desativada", "#98a2b3", "inactive"
 
         green_dot = "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEUlEQVR42mMQ2p6FFTEMLQkA53tMwTO14RIAAAAASUVORK5CYII="
         gray_dot = "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEUlEQVR42mOYsWgzVsQwtCQAIdh7QTlgorsAAAAASUVORK5CYII="
-        camera_rows = "".join(f"<button type='button' class='camera-card' style='display:flex;flex-direction:row;align-items:center;gap:12px;background:#f8fafc;color:#172033;border:1px solid #e4e9f2' onclick='openCamera({index})'><span class='camera-icon' aria-hidden='true' style='display:inline-flex;align-items:center;flex:0 0 28px;font-size:20px'>{device_icon(camera)}</span><span class='camera-card-content' style='display:flex;flex-direction:row;align-items:center;gap:12px'><strong>{escape(str(camera.get('name', 'Câmera')))}</strong><small class='camera-status {'active' if camera_enabled(camera) else 'inactive'}' style='display:inline-flex;align-items:center;gap:5px'><span aria-hidden='true' style='display:inline-block;width:8px;height:8px;flex:0 0 8px;border-radius:50%;background:{'#12b76a' if camera_enabled(camera) else '#98a2b3'}'></span>{'Ativa' if camera_enabled(camera) else 'Desativada'}</small></span></button>" for index, camera in enumerate(cameras))
+        def camera_row(camera, index):
+            label, color, state_class = camera_runtime_state(camera)
+            return f"<button type='button' class='camera-card' style='display:flex;flex-direction:row;align-items:center;gap:12px;background:#f8fafc;color:#172033;border:1px solid #e4e9f2' onclick='openCamera({index})'><span class='camera-icon' aria-hidden='true' style='display:inline-flex;align-items:center;flex:0 0 28px;font-size:20px'>{device_icon(camera)}</span><span class='camera-card-content' style='display:flex;flex-direction:row;align-items:center;gap:12px'><strong>{escape(str(camera.get('name', 'Câmera')))}</strong><small class='camera-status {state_class}' style='display:inline-flex;align-items:center;gap:5px'><span aria-hidden='true' style='display:inline-block;width:8px;height:8px;flex:0 0 8px;border-radius:50%;background:{color}'></span>{escape(label)}</small></span></button>"
+
+        camera_rows = "".join(camera_row(camera, index) for index, camera in enumerate(cameras))
         camera_data = json.dumps(cameras, ensure_ascii=False).replace("</", "<\\/")
         overview_cards = "".join(f"<div style='padding:14px;border:1px solid #e4e9f2;border-radius:10px;background:#f8fafc'><strong>{escape(str(camera.get('name', 'Câmera')))}</strong><br><span class='hint'>Fonte cadastrada · aguardando runtime</span></div>" for camera in cameras)
         page = f"""<!doctype html><html lang='pt-BR'><meta charset='utf-8'><title>VIGIL.AI</title>

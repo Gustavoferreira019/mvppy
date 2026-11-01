@@ -1,6 +1,14 @@
 capture:
   source: null
   cameras: []
+  connection:
+    network_open_timeout_seconds: 8
+    network_read_timeout_seconds: 5
+    frame_stall_timeout_seconds: 5
+    reconnect_initial_seconds: 2
+    reconnect_max_seconds: 30
+    reconnect_stable_seconds: 60
+    webcam_retry_seconds: 10
 detector:
   model_path: models/yolov8n.pt
   confidence: 0.5
@@ -18,3 +26,4 @@ recording:
   fps: 20
   before_seconds: 10
   after_seconds: 5
+  max_event_seconds: 60
